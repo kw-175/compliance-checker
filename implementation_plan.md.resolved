@@ -1,0 +1,203 @@
+# Text Data Compliance Checker Module
+
+基于用户定义的 A→J 工作流，在 `compliance-checker/text/` 目录下构建一个完整的文本数据合规检测微服务。每个流程步骤封装为独立模块，由管道编排器串联，最终以 FastAPI 微服务对外提供 REST API。
+
+## User Review Required
+
+> [!IMPORTANT]
+> **关于 Hyperscan 依赖**：`python-hyperscan` 包需要系统安装 Vectorscan/Hyperscan C 库。在 Windows 上编译较困难。代码中提供 **fallback 方案**（使用 Python `re` 模块），确保开发阶段可用。生产环境建议在 Linux 容器中运行。
+
+> [!IMPORTANT]
+> **关于 Qwen3Guard**：需要 GPU 和 `transformers` 库加载模型（默认使用 `Qwen/Qwen3-Guard-0.6B`）。代码中提供 **mock fallback**，开发时可不依赖 GPU。
+
+> [!WARNING]
+> **关于 OPA**：OPA 以独立 Go 二进制运行，代码通过 HTTP 调用其 REST API。需要用户预先下载并启动 OPA server，或使用 Docker。代码中提供 **本地 Rego 评估 fallback**。
+
+> [!WARNING]
+> **关于 Duplodocus**：Duplodocus 是 Rust 实现的 CLI 工具。代码中同样提供 **MinHash Python fallback**（使用 `datasketch` 库），确保开发阶段可用。
+
+## Proposed Changes
+
+### Project Structure
+
+```
+text/
+├── config/
+│   ├── settings.py          # 全局配置（Pydantic Settings）
+│   ├── keywords.txt          # 关键词列表（E1a 用）
+│   └── patterns.yaml         # 正则模式列表（E1b 用）
+├── models/
+│   └── schemas.py            # 所有 JSONL 数据模型（Pydantic）
+├── steps/
+│   ├── __init__.py
+│   ├── a_source_intake.py          # Step A
+│   ├── b1_source_classify.py       # Step B1
+│   ├── b2a_trufflehog_scan.py      # Step B2a
+│   ├── b2b_scancode_scan.py        # Step B2b
+│   ├── c_text_extract.py           # Step C
+│   ├── d_dedup.py                  # Step D
+│   ├── e1a_keyword_scan.py         # Step E1a
+│   ├── e1b_regex_scan.py           # Step E1b
+│   ├── f_privacy_detection.py      # Step F
+│   ├── g_safety_moderation.py      # Step G
+│   ├── h_evidence_aggregation.py   # Step H
+│   ├── i_policy_decision.py        # Step I
+│   └── j_lineage_audit.py          # Step J
+├── pipeline.py               # 管道编排器
+├── server.py                 # FastAPI 微服务入口
+├── requirements.txt           # Python 依赖
+├── Dockerfile                 # 容器化部署
+├── docker-compose.yml         # OPA + 主服务编排
+├── policies/
+│   └── compliance.rego        # OPA 策略文件
+└── tests/
+    ├── __init__.py
+    ├── test_pipeline.py       # 管道集成测试
+    └── fixtures/
+        └── sample_input.jsonl # 测试用样本数据
+```
+
+---
+
+### Core Infrastructure
+
+#### [NEW] [settings.py](file:///d:/CodeVS/CodePython/compliance-checker/text/config/settings.py)
+- Pydantic `BaseSettings` 定义所有配置项
+- 环境变量 / `.env` 文件两种加载方式
+- 包含各工具路径、模型名称、OPA 地址、阈值等
+
+#### [NEW] [schemas.py](file:///d:/CodeVS/CodePython/compliance-checker/text/models/schemas.py)
+- `SourceRecord`：source_registry.jsonl 数据模型
+- `SourceProfile`：source_profile.jsonl
+- `SecretHit`：raw_secret_hits.jsonl
+- `ComplianceHit`：source_compliance.jsonl
+- `CleanedDocument`：cleaned_documents.jsonl
+- `DedupDocument`：deduped_documents.jsonl
+- `DedupMapEntry`：dedup_map.jsonl
+- `KeywordHit` / `RegexHit`：keyword_hits.jsonl / regex_hits.jsonl
+- `PrivacyResult`：privacy_checked.jsonl
+- `SafetyResult`：safety_checked.jsonl
+- `EvidenceBundle`：evidence_bundle.json
+- `PolicyDecision`：decision.json
+
+---
+
+### Step Modules
+
+#### [NEW] [a_source_intake.py](file:///d:/CodeVS/CodePython/compliance-checker/text/steps/a_source_intake.py)
+- 接收文件路径/URL/目录
+- 遍历输入，生成 `SourceRecord`（id, path, size, hash, mime_type, timestamp）
+- 输出 `source_registry.jsonl`
+
+#### [NEW] [b1_source_classify.py](file:///d:/CodeVS/CodePython/compliance-checker/text/steps/b1_source_classify.py)
+- 读取 source_registry 并根据 MIME 类型和文件扩展名
+- 分类为 `code | repo | package | binary | web_text | pdf_text | mixed`
+- 输出 `source_profile.jsonl`
+
+#### [NEW] [b2a_trufflehog_scan.py](file:///d:/CodeVS/CodePython/compliance-checker/text/steps/b2a_trufflehog_scan.py)
+- 调用 TruffleHog CLI（`subprocess`）扫描原始文件
+- 解析 JSON 输出为 `SecretHit` 列表
+- 输出 `raw_secret_hits.jsonl`
+
+#### [NEW] [b2b_scancode_scan.py](file:///d:/CodeVS/CodePython/compliance-checker/text/steps/b2b_scancode_scan.py)
+- 仅对 source_type ∈ {code, repo, package, binary, mixed} 的来源执行
+- 调用 ScanCode CLI 或 Python API 进行许可证合规扫描
+- 输出 `source_compliance.jsonl`
+
+#### [NEW] [c_text_extract.py](file:///d:/CodeVS/CodePython/compliance-checker/text/steps/c_text_extract.py)
+- 使用 DataTrove 的 text extraction pipeline
+- 处理 HTML (Trafilatura)、PDF (PyMuPDF fallback)、纯文本
+- 文本清洗（Unicode 规范化、空白处理）
+- 输出 `cleaned_documents.jsonl`
+
+#### [NEW] [d_dedup.py](file:///d:/CodeVS/CodePython/compliance-checker/text/steps/d_dedup.py)
+- 优先调用 Duplodocus CLI 进行精确 + MinHash 去重
+- Fallback：使用 `datasketch` 库进行 MinHash LSH 去重
+- 输出 `deduped_documents.jsonl` + `dedup_map.jsonl`
+
+#### [NEW] [e1a_keyword_scan.py](file:///d:/CodeVS/CodePython/compliance-checker/text/steps/e1a_keyword_scan.py)
+- 使用 FlashText2 `KeywordProcessor` 加载 keywords.txt
+- 扫描文本提取关键词命中
+- 输出 `keyword_hits.jsonl`
+
+#### [NEW] [e1b_regex_scan.py](file:///d:/CodeVS/CodePython/compliance-checker/text/steps/e1b_regex_scan.py)
+- 优先使用 `hyperscan` Python 绑定编译正则模式
+- Fallback：使用 Python `re` 模块
+- 输出 `regex_hits.jsonl`
+
+#### [NEW] [f_privacy_detection.py](file:///d:/CodeVS/CodePython/compliance-checker/text/steps/f_privacy_detection.py)
+- 使用 Microsoft Presidio `AnalyzerEngine` + `AnonymizerEngine`
+- 可选加载自定义 PII 模型（如 `Meddies/meddies-pii`）通过 `transformers` NER recognizer
+- 检测 + 脱敏 PII 实体
+- 输出 `privacy_checked.jsonl`（含 redacted_text 和 pii_entities 列表）
+
+#### [NEW] [g_safety_moderation.py](file:///d:/CodeVS/CodePython/compliance-checker/text/steps/g_safety_moderation.py)
+- 使用 `transformers` 加载 Qwen3Guard 模型
+- 对 redacted_text 进行安全性三级分类（Safe / Controversial / Unsafe）
+- 提取具体风险类别
+- 输出 `safety_checked.jsonl`
+
+#### [NEW] [h_evidence_aggregation.py](file:///d:/CodeVS/CodePython/compliance-checker/text/steps/h_evidence_aggregation.py)
+- 汇总 B2 / D / E1 / F / G 各步的检测结果
+- 按 document_id 关联为统一的 `EvidenceBundle`
+- 输出 `evidence_bundle.json`
+
+#### [NEW] [i_policy_decision.py](file:///d:/CodeVS/CodePython/compliance-checker/text/steps/i_policy_decision.py)
+- 将 evidence_bundle 发送给 OPA REST API (`POST /v1/data/compliance/decision`)
+- Fallback：本地 Rego 解析做简单规则判断
+- 输出 `decision.json`（allow / review / quarantine / reject）
+
+#### [NEW] [j_lineage_audit.py](file:///d:/CodeVS/CodePython/compliance-checker/text/steps/j_lineage_audit.py)
+- 使用 `openlineage-python` 客户端为 B2/C/D/E1/F/G/H/I 每一步记录 RunEvent
+- 支持 ConsoleTransport（开发）和 HttpTransport（生产 → Marquez）
+
+---
+
+### Pipeline & Service
+
+#### [NEW] [pipeline.py](file:///d:/CodeVS/CodePython/compliance-checker/text/pipeline.py)
+- `CompliancePipeline` 类，串联 A→J 所有步骤
+- 支持并行执行（B2a/B2b 并行，E1a/E1b 并行）使用 `asyncio` / `concurrent.futures`
+- 每步输出写入指定目录，可独立重跑
+- 集成 lineage 追踪
+
+#### [NEW] [server.py](file:///d:/CodeVS/CodePython/compliance-checker/text/server.py)
+- FastAPI 微服务
+- `POST /api/v1/check`：提交检查任务
+- `GET /api/v1/status/{task_id}`：查询任务状态
+- `GET /api/v1/result/{task_id}`：获取检查结果
+- `GET /api/v1/health`：健康检查
+
+---
+
+### Deployment
+
+#### [NEW] [Dockerfile](file:///d:/CodeVS/CodePython/compliance-checker/text/Dockerfile)
+- 基于 `python:3.11-slim`
+- 安装系统依赖（TruffleHog、ScanCode CLI）
+- 安装 Python 依赖
+- 暴露 8000 端口
+
+#### [NEW] [docker-compose.yml](file:///d:/CodeVS/CodePython/compliance-checker/text/docker-compose.yml)
+- `text-checker` 服务 + `opa` 服务编排
+
+#### [NEW] [compliance.rego](file:///d:/CodeVS/CodePython/compliance-checker/text/policies/compliance.rego)
+- OPA Rego 策略文件，定义 allow/review/quarantine/reject 规则
+
+---
+
+## Verification Plan
+
+### Automated Tests
+
+1. **单元测试**：运行 `pytest text/tests/ -v`
+   - 使用 `fixtures/sample_input.jsonl` 作为测试输入
+   - 每个 step 模块提供 mock 测试
+   - 测试 pipeline 的完整执行流程
+
+2. **类型检查**：运行 `python -m py_compile text/server.py` 验证语法正确
+
+### Manual Verification
+
+1. 启动服务后通过 `curl` 或浏览器测试 `/api/v1/health` 端点
+2. 用户提供一份测试文本文件，通过 `/api/v1/check` 接口提交，检查完整流程输出

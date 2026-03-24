@@ -1,0 +1,105 @@
+# Text Data Compliance Checker – Walkthrough
+
+## Overview
+
+Built a complete text data compliance checking module at `compliance-checker/text/` — 31 files implementing a 10-step pipeline (A→J), packaged as a FastAPI microservice with Docker deployment.
+
+## Architecture
+
+```mermaid
+graph TD
+    A["A: Source Intake"] --> B1["B1: Source Classification"]
+    B1 --> B2a["B2a: TruffleHog Secrets"]
+    B1 --> B2b["B2b: ScanCode Licenses"]
+    B1 --> C["C: Text Extract (DataTrove)"]
+    C --> D["D: Dedup (MinHash)"]
+    D --> E1a["E1a: Keyword Scan (FlashText2)"]
+    D --> E1b["E1b: Regex Scan (Hyperscan)"]
+    D --> F["F: PII Detection (Presidio)"]
+    F --> G["G: Safety (Qwen3Guard)"]
+    B2a & B2b & E1a & E1b & F & G --> H["H: Evidence Aggregation"]
+    H --> I["I: Policy Decision (OPA)"]
+    I --> J["J: Lineage (OpenLineage)"]
+
+    style A fill:#4CAF50,color:#fff
+    style I fill:#F44336,color:#fff
+    style J fill:#2196F3,color:#fff
+```
+
+## Files Created (31 total)
+
+| Category | Files | Purpose |
+|----------|-------|---------|
+| **Core** | [__init__.py](file:///d:/CodeVS/CodePython/compliance-checker/text/__init__.py), [pipeline.py](file:///d:/CodeVS/CodePython/compliance-checker/text/pipeline.py), [server.py](file:///d:/CodeVS/CodePython/compliance-checker/text/server.py) | Package init, orchestrator, FastAPI server |
+| **Config** | [config/settings.py](file:///d:/CodeVS/CodePython/compliance-checker/text/config/settings.py), [keywords.txt](file:///d:/CodeVS/CodePython/compliance-checker/text/config/keywords.txt), [patterns.yaml](file:///d:/CodeVS/CodePython/compliance-checker/text/config/patterns.yaml) | Pydantic settings, keyword/regex config |
+| **Models** | [models/schemas.py](file:///d:/CodeVS/CodePython/compliance-checker/text/models/schemas.py) | 20+ Pydantic models for all JSONL/JSON artifacts |
+| **Steps** | [steps/a_source_intake.py](file:///d:/CodeVS/CodePython/compliance-checker/text/steps/a_source_intake.py) through [steps/j_lineage_audit.py](file:///d:/CodeVS/CodePython/compliance-checker/text/steps/j_lineage_audit.py) | 13 step module files |
+| **Policy** | [policies/compliance.rego](file:///d:/CodeVS/CodePython/compliance-checker/text/policies/compliance.rego) | OPA Rego decision rules |
+| **Deploy** | [Dockerfile](file:///d:/CodeVS/CodePython/compliance-checker/text/Dockerfile), [docker-compose.yml](file:///d:/CodeVS/CodePython/compliance-checker/text/docker-compose.yml), [requirements.txt](file:///d:/CodeVS/CodePython/compliance-checker/text/requirements.txt) | Containerization and dependencies |
+| **Tests** | [tests/test_pipeline.py](file:///d:/CodeVS/CodePython/compliance-checker/text/tests/test_pipeline.py), [tests/fixtures/sample_input.jsonl](file:///d:/CodeVS/CodePython/compliance-checker/text/tests/fixtures/sample_input.jsonl) | Unit + integration tests |
+
+## Tool Integration Summary
+
+| Tool | Integration Method | Fallback |
+|------|-------------------|----------|
+| TruffleHog | `subprocess` CLI | Logs warning, returns empty |
+| ScanCode | `subprocess` CLI | Logs warning, returns empty |
+| DataTrove/Trafilatura | Python API (`trafilatura.extract`) | Basic HTML tag stripping |
+| Duplodocus | N/A (replaced) | `datasketch` MinHash LSH |
+| FlashText2 | Python API (`KeywordProcessor`) | `str.find()` loop |
+| Hyperscan | Python API (`hyperscan.Database`) | `re.finditer()` |
+| Presidio | Python API (`AnalyzerEngine` + `AnonymizerEngine`) | Pass-through (no redaction) |
+| Meddies PII | HuggingFace [transformers](file:///d:/CodeVS/CodePython/compliance-checker/text/steps/f_privacy_detection.py#65-90) NER → Presidio recognizer | Built-in Presidio recognizers |
+| Qwen3Guard | [transformers](file:///d:/CodeVS/CodePython/compliance-checker/text/steps/f_privacy_detection.py#65-90) `AutoModelForCausalLM` | Keyword-based mock classifier |
+| OPA | HTTP REST (`httpx.post`) | Local Python rule engine |
+| OpenLineage | Python API (`OpenLineageClient.emit`) | Console logging |
+
+## Key Design Decisions
+
+1. **Parallel execution**: B2a/B2b and E1a/E1b run concurrently via `ThreadPoolExecutor`
+2. **Every tool has a fallback**: All external dependencies gracefully degrade
+3. **Per-step JSONL output**: Each step writes its results to `{work_dir}/{run_id}/`
+4. **Lineage tracking**: Every step emits START/COMPLETE/FAIL OpenLineage events
+5. **Local rule engine**: 5-dimension scoring (secrets, safety, privacy, compliance, text_scan) with thresholds mapping to allow/review/quarantine/reject
+
+## How to Run
+
+### Local Development
+
+```bash
+cd compliance-checker/text
+pip install -r requirements.txt
+python -m spacy download en_core_web_sm
+python server.py
+# Server starts at http://localhost:8000
+```
+
+### Docker
+
+```bash
+cd compliance-checker/text
+docker compose up --build
+# text-checker at :8000, OPA at :8181
+```
+
+### API Usage
+
+```bash
+# Submit a check
+curl -X POST http://localhost:8000/api/v1/check \
+  -H "Content-Type: application/json" \
+  -d '{"input_paths": ["/path/to/your/data"]}'
+
+# Check status
+curl http://localhost:8000/api/v1/status/{task_id}
+
+# Get result
+curl http://localhost:8000/api/v1/result/{task_id}
+```
+
+### Tests
+
+```bash
+cd compliance-checker
+pytest text/tests/ -v
+```
