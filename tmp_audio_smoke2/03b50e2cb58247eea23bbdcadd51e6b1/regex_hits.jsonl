@@ -1,0 +1,2 @@
+{"unit_id":"ae51ed0d20d6","pattern_name":"email_address","pattern":"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\\.[a-zA-Z0-9-.]+","matched_text":"john@example.com","start_pos":13,"end_pos":29,"context":"Please email john@example.com about the confidential wire transfer."}
+{"unit_id":"2dd6e0c988d3","pattern_name":"us_ssn","pattern":"\\b\\d{3}-\\d{2}-\\d{4}\\b","matched_text":"123-45-6789","start_pos":22,"end_pos":33,"context":"The account number is 123-45-6789 and this attack plan stays secret."}

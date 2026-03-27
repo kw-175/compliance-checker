@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  audio-compliance:
+    build:
+      context: ..
+      dockerfile: audio/Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      COMPLIANCE_WORK_DIR: /data/audio-output
+      COMPLIANCE_OPA_ENABLED: "false"
+      COMPLIANCE_QWEN_ASR_ENABLED: "false"
+      COMPLIANCE_PYANNOTE_ENABLED: "false"
+      COMPLIANCE_QWEN_GUARD_ENABLED: "false"
+    volumes:
+      - ./data:/data

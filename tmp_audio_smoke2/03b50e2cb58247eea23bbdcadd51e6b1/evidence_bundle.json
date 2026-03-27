@@ -1,0 +1,141 @@
+{
+  "pipeline_run_id": "03b50e2cb58247eea23bbdcadd51e6b1",
+  "created_at": "2026-03-26T08:46:18.347617Z",
+  "transcript_units": [
+    {
+      "unit_id": "ae51ed0d20d6",
+      "source_id": "32d2fed64822",
+      "text": "Please email john@example.com about the confidential wire transfer.",
+      "speaker_id": "speaker_0",
+      "is_duplicate": false,
+      "secret_hits": [],
+      "compliance_hits": [],
+      "keyword_hits": [
+        {
+          "unit_id": "ae51ed0d20d6",
+          "keyword": "confidential",
+          "start_pos": 40,
+          "end_pos": 52,
+          "context": "Please email john@example.com about the confidential wire transfer."
+        },
+        {
+          "unit_id": "ae51ed0d20d6",
+          "keyword": "wire transfer",
+          "start_pos": 53,
+          "end_pos": 66,
+          "context": "john@example.com about the confidential wire transfer."
+        }
+      ],
+      "regex_hits": [
+        {
+          "unit_id": "ae51ed0d20d6",
+          "pattern_name": "email_address",
+          "pattern": "[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\\.[a-zA-Z0-9-.]+",
+          "matched_text": "john@example.com",
+          "start_pos": 13,
+          "end_pos": 29,
+          "context": "Please email john@example.com about the confidential wire transfer."
+        }
+      ],
+      "privacy": {
+        "unit_id": "ae51ed0d20d6",
+        "source_id": "32d2fed64822",
+        "original_text": "Please email john@example.com about the confidential wire transfer.",
+        "redacted_text": "Please email <EMAIL> about the confidential wire transfer.",
+        "pii_entities": [
+          {
+            "entity_type": "EMAIL_ADDRESS",
+            "start": 13,
+            "end": 29,
+            "score": 0.8,
+            "original_text": "john@example.com"
+          }
+        ],
+        "pii_count": 1
+      },
+      "safety": {
+        "unit_id": "ae51ed0d20d6",
+        "source_id": "32d2fed64822",
+        "safety_level": "safe",
+        "harm_categories": [],
+        "raw_output": "mock safe",
+        "score": 1.0
+      }
+    },
+    {
+      "unit_id": "2dd6e0c988d3",
+      "source_id": "32d2fed64822",
+      "text": "The account number is 123-45-6789 and this attack plan stays secret.",
+      "speaker_id": "speaker_0",
+      "is_duplicate": false,
+      "secret_hits": [],
+      "compliance_hits": [],
+      "keyword_hits": [
+        {
+          "unit_id": "2dd6e0c988d3",
+          "keyword": "account number",
+          "start_pos": 4,
+          "end_pos": 18,
+          "context": "The account number is 123-45-6789 and this attack plan sta"
+        },
+        {
+          "unit_id": "2dd6e0c988d3",
+          "keyword": "attack",
+          "start_pos": 43,
+          "end_pos": 49,
+          "context": " account number is 123-45-6789 and this attack plan stays secret."
+        }
+      ],
+      "regex_hits": [
+        {
+          "unit_id": "2dd6e0c988d3",
+          "pattern_name": "us_ssn",
+          "pattern": "\\b\\d{3}-\\d{2}-\\d{4}\\b",
+          "matched_text": "123-45-6789",
+          "start_pos": 22,
+          "end_pos": 33,
+          "context": "The account number is 123-45-6789 and this attack plan stays secret."
+        }
+      ],
+      "privacy": {
+        "unit_id": "2dd6e0c988d3",
+        "source_id": "32d2fed64822",
+        "original_text": "The account number is 123-45-6789 and this attack plan stays secret.",
+        "redacted_text": "The account number is <SSN> and this attack plan stays secret.",
+        "pii_entities": [
+          {
+            "entity_type": "US_SSN",
+            "start": 22,
+            "end": 33,
+            "score": 0.8,
+            "original_text": "123-45-6789"
+          }
+        ],
+        "pii_count": 1
+      },
+      "safety": {
+        "unit_id": "2dd6e0c988d3",
+        "source_id": "32d2fed64822",
+        "safety_level": "unsafe",
+        "harm_categories": [
+          "violent_content"
+        ],
+        "raw_output": "mock matched attack",
+        "score": 0.0
+      }
+    }
+  ],
+  "summary": {
+    "total_units": 2,
+    "duplicate_units": 0,
+    "distinct_sources": 1,
+    "total_secret_hits": 0,
+    "total_compliance_hits": 0,
+    "total_keyword_hits": 4,
+    "total_regex_hits": 2,
+    "total_pii_entities": 2,
+    "unsafe_units": 1,
+    "controversial_units": 0,
+    "safe_units": 1
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "pipeline_run_id": "03b50e2cb58247eea23bbdcadd51e6b1",
+  "overall_decision": "reject",
+  "unit_decisions": [
+    {
+      "unit_id": "ae51ed0d20d6",
+      "decision": "review",
+      "reasons": [],
+      "scores": {
+        "secrets": 1.0,
+        "safety": 1.0,
+        "privacy": 0.7,
+        "compliance": 1.0,
+        "text_scan": 0.6
+      }
+    },
+    {
+      "unit_id": "2dd6e0c988d3",
+      "decision": "reject",
+      "reasons": [
+        "unsafe content"
+      ],
+      "scores": {
+        "secrets": 1.0,
+        "safety": 0.0,
+        "privacy": 0.7,
+        "compliance": 1.0,
+        "text_scan": 0.6
+      }
+    }
+  ],
+  "evaluated_at": "2026-03-26T08:46:18.348401Z"
+}

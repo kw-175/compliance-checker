@@ -1,0 +1,12 @@
+normalize:
+  sample_rate: 16000
+  channels: 1
+  codec: pcm_s16le
+  extension: wav
+
+redaction:
+  silence:
+    volume: 0
+  beep:
+    frequency: 1000
+    volume: 0.4

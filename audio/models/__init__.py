@@ -1,0 +1,3 @@
+"""
+Audio schemas package.
+"""

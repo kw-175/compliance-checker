@@ -1,0 +1,1 @@
+{"unit_id":"db215e1887db","source_id":"77f542e91e36","original_text":"The account number is 123-45-6789 and this attack plan stays secret.","redacted_text":"The account number is <SSN> and this attack plan stays secret.","pii_entities":[{"entity_type":"US_SSN","start":22,"end":33,"score":0.8,"original_text":"123-45-6789"}],"pii_count":1}

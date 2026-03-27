@@ -1,0 +1,21 @@
+{
+  "pipeline_run_id": "07f31aab140843b1ab7bb8e8c161402b",
+  "overall_decision": "reject",
+  "unit_decisions": [
+    {
+      "unit_id": "db215e1887db",
+      "decision": "reject",
+      "reasons": [
+        "unsafe content"
+      ],
+      "scores": {
+        "secrets": 1.0,
+        "safety": 0.0,
+        "privacy": 0.7,
+        "compliance": 1.0,
+        "text_scan": 0.6
+      }
+    }
+  ],
+  "evaluated_at": "2026-03-26T08:42:22.810850Z"
+}

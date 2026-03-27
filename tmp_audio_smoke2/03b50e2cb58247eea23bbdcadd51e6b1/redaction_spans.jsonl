@@ -1,0 +1,2 @@
+{"source_id":"32d2fed64822","unit_id":"ae51ed0d20d6","start_time":0.2716417910447761,"end_time":0.6059701492537313,"entity_type":"EMAIL_ADDRESS","original_text":"john@example.com","replacement":"<EMAIL>"}
+{"source_id":"32d2fed64822","unit_id":"2dd6e0c988d3","start_time":1.788235294117647,"end_time":1.9823529411764707,"entity_type":"US_SSN","original_text":"123-45-6789","replacement":"<SSN>"}

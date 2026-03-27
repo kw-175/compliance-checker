@@ -1,0 +1,78 @@
+{
+  "pipeline_run_id": "07f31aab140843b1ab7bb8e8c161402b",
+  "created_at": "2026-03-26T08:42:22.817225Z",
+  "original_audio": [
+    {
+      "source_id": "77f542e91e36",
+      "original_path": "D:\\CodeVS\\CodePython\\compliance-checker\\audio\\tests\\fixtures\\sample_audio.wav",
+      "normalized_path": "D:\\CodeVS\\CodePython\\compliance-checker\\tmp_audio_smoke\\07f31aab140843b1ab7bb8e8c161402b\\normalized_audio\\77f542e91e36.wav",
+      "sample_rate": 16000,
+      "channels": 1,
+      "codec": "pcm_s16le",
+      "duration_seconds": 3.0,
+      "engine_name": "copy_fallback",
+      "metadata": {
+        "size_bytes": 96044,
+        "sha256": "fca2999e2f1422e4dfdb6814bd3954853eae391a2b5da76170a4e1bef12e093a"
+      }
+    }
+  ],
+  "transcript_summary": {
+    "total_units": 1,
+    "duplicate_units": 0,
+    "unsafe_units": 1,
+    "controversial_units": 0,
+    "safe_units": 0
+  },
+  "decision": {
+    "pipeline_run_id": "07f31aab140843b1ab7bb8e8c161402b",
+    "overall_decision": "reject",
+    "unit_decisions": [
+      {
+        "unit_id": "db215e1887db",
+        "decision": "reject",
+        "reasons": [
+          "unsafe content"
+        ],
+        "scores": {
+          "secrets": 1.0,
+          "safety": 0.0,
+          "privacy": 0.7,
+          "compliance": 1.0,
+          "text_scan": 0.6
+        }
+      }
+    ],
+    "evaluated_at": "2026-03-26T08:42:22.810850Z"
+  },
+  "evidence_summary": {
+    "total_units": 1,
+    "duplicate_units": 0,
+    "distinct_sources": 1,
+    "total_secret_hits": 0,
+    "total_compliance_hits": 0,
+    "total_keyword_hits": 2,
+    "total_regex_hits": 0,
+    "total_pii_entities": 1,
+    "unsafe_units": 1,
+    "controversial_units": 0,
+    "safe_units": 0
+  },
+  "redacted_audio": [
+    {
+      "source_id": "77f542e91e36",
+      "original_audio_path": "D:\\CodeVS\\CodePython\\compliance-checker\\tmp_audio_smoke\\07f31aab140843b1ab7bb8e8c161402b\\normalized_audio\\77f542e91e36.wav",
+      "redacted_audio_path": "D:\\CodeVS\\CodePython\\compliance-checker\\tmp_audio_smoke\\07f31aab140843b1ab7bb8e8c161402b\\redacted_audio\\77f542e91e36.wav",
+      "render_strategy": "copy",
+      "span_count": 1,
+      "duration_seconds": 3.0,
+      "metadata": {
+        "engine_name": "copy_fallback",
+        "requested_strategy": "silence"
+      }
+    }
+  ],
+  "audit_metadata": {
+    "output_dir": "D:\\CodeVS\\CodePython\\compliance-checker\\tmp_audio_smoke\\07f31aab140843b1ab7bb8e8c161402b"
+  }
+}
