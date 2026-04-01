@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 def _select_strategy(settings: Settings) -> RenderStrategy:
+    # 将配置字符串映射为 RenderStrategy 枚举。
     raw = (settings.redaction_strategy or "silence").lower()
     if raw == RenderStrategy.BEEP.value:
         return RenderStrategy.BEEP
@@ -26,6 +27,7 @@ def _select_strategy(settings: Settings) -> RenderStrategy:
 
 
 def _render_silence(record: NormalizedAudioRecord, spans: list[RedactionSpan], target_path: Path, settings: Settings) -> bool:
+    # 通过 ffmpeg volume filter 在敏感区间静音。
     filters = [f"volume=enable='between(t,{span.start_time},{span.end_time})':volume=0" for span in spans]
     result = run_command(
         [
@@ -43,6 +45,7 @@ def _render_silence(record: NormalizedAudioRecord, spans: list[RedactionSpan], t
 
 
 def _render_beep(record: NormalizedAudioRecord, spans: list[RedactionSpan], target_path: Path, settings: Settings) -> bool:
+    # 通过正弦波 + amix 在敏感区间进行蜂鸣覆盖。
     duration = max(record.duration_seconds, max((span.end_time for span in spans), default=0.0))
     expr = "+".join([f"between(t,{span.start_time},{span.end_time})" for span in spans])
     filter_complex = (
@@ -69,6 +72,7 @@ def _render_beep(record: NormalizedAudioRecord, spans: list[RedactionSpan], targ
 
 
 def run(records: list[NormalizedAudioRecord], spans: list[RedactionSpan], settings: Settings, output_dir: Path) -> list[RedactedAudioRecord]:
+    # 按 source 聚合 span，逐条音频输出脱敏产物。
     redaction_dir = output_dir / "redacted_audio"
     redaction_dir.mkdir(parents=True, exist_ok=True)
     spans_by_source: dict[str, list[RedactionSpan]] = defaultdict(list)
@@ -81,6 +85,7 @@ def run(records: list[NormalizedAudioRecord], spans: list[RedactionSpan], settin
         target_path = redaction_dir / Path(record.normalized_path).name
         source_spans = sorted(spans_by_source.get(record.source_id, []), key=lambda item: item.start_time)
         if requested_strategy == RenderStrategy.COPY or not source_spans:
+            # 纯复制策略或无敏感片段时直接拷贝。
             shutil.copy2(record.normalized_path, target_path)
             strategy = RenderStrategy.COPY
         else:
@@ -93,6 +98,7 @@ def run(records: list[NormalizedAudioRecord], spans: list[RedactionSpan], settin
                 strategy = RenderStrategy.SILENCE if render_ok else RenderStrategy.COPY
 
             if not render_ok:
+                # 渲染失败回退 copy，确保有稳定输出文件。
                 logger.warning("Audio redaction render failed for %s, fallback to copy", record.source_id)
                 shutil.copy2(record.normalized_path, target_path)
                 strategy = RenderStrategy.COPY

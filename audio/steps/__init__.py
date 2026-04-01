@@ -21,11 +21,14 @@ def run_command(
 ) -> subprocess.CompletedProcess[str] | None:
     """Execute an external command with consistent logging and graceful failure."""
 
+    # 空命令直接跳过，避免 subprocess 抛错。
     if not command:
         return None
+    # 优先解析 PATH 中的可执行文件绝对路径，提高跨平台稳定性。
     binary = shutil.which(command[0]) or command[0]
     command = [binary, *command[1:]]
     try:
+        # 统一捕获 stdout/stderr，便于日志与问题定位。
         result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError:
         logger.warning("Binary not available: %s", command[0])
@@ -35,6 +38,7 @@ def run_command(
         return None
 
     if result.returncode not in ok_returncodes:
+        # 非预期返回码视为失败并交给调用方走降级逻辑。
         logger.warning("Command failed (%s): %s", result.returncode, " ".join(command))
         if result.stderr:
             logger.debug("stderr: %s", result.stderr)
@@ -43,6 +47,7 @@ def run_command(
 
 
 def _parse_scalar(value: str) -> Any:
+    # 简易 YAML 标量解析：布尔/空值/数字/字符串。
     lowered = value.lower()
     if lowered in {"true", "false"}:
         return lowered == "true"
@@ -62,6 +67,7 @@ def _parse_scalar(value: str) -> Any:
 
 
 def _load_simple_yaml(path: Path) -> dict[str, Any]:
+    # 轻量 YAML 解析器，仅覆盖本项目配置所需的键值与层级结构。
     root: dict[str, Any] = {}
     stack: list[tuple[int, dict[str, Any]]] = [(-1, root)]
 
@@ -69,6 +75,7 @@ def _load_simple_yaml(path: Path) -> dict[str, Any]:
         line = raw_line.rstrip()
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
+            # 跳过空行与注释行。
             continue
 
         indent = len(line) - len(line.lstrip(" "))
@@ -83,6 +90,7 @@ def _load_simple_yaml(path: Path) -> dict[str, Any]:
         key = key.strip()
         value = remainder.strip()
         if not value:
+            # 无值时创建子节点，依赖缩进继续填充。
             node: dict[str, Any] = {}
             parent[key] = node
             stack.append((indent, node))
@@ -93,11 +101,13 @@ def _load_simple_yaml(path: Path) -> dict[str, Any]:
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
+    # 配置文件缺失时返回空字典，避免调用方重复判空。
     if not path.exists():
         return {}
     try:
         import yaml
     except ImportError:
+        # 没有 PyYAML 时退化到内置简化解析器。
         logger.warning("PyYAML unavailable, using simple YAML parser for %s", path)
         return _load_simple_yaml(path)
 
@@ -117,5 +127,6 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
             try:
                 rows.append(json.loads(line))
             except json.JSONDecodeError:
+                # 单行异常不影响全量读取，便于容忍部分脏数据。
                 logger.warning("Skipping malformed JSONL row in %s", path)
     return rows

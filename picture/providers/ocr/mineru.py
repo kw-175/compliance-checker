@@ -3,7 +3,8 @@ MinerU OCR/layout provider skeleton.
 
 Requires: magic-pdf (MinerU)
 """
-
+# 中文说明：MinerU 更偏文档解析场景，这里先保留 provider 骨架和依赖检查，
+# 便于后续接真实的版面结构结果。
 from __future__ import annotations
 
 import logging
@@ -27,12 +28,13 @@ class MinerUProvider(OCRLayoutProvider):
     def analyze(self, image_path: str) -> OCRLayoutResult:
         """Run MinerU analysis. Requires magic-pdf package."""
         try:
-            # Lazy import to avoid hard dependency
+            # 中文说明：延迟导入可以避免项目在未安装 MinerU 时导入阶段直接失败。
             import magic_pdf  # type: ignore[import-untyped]  # noqa: F401
         except ImportError:
             from picture.domain.exceptions import ProviderNotAvailableError
+
             raise ProviderNotAvailableError("MinerU (magic-pdf)")
 
-        # TODO: Implement MinerU integration when available
+        # 中文说明：当前还未完成真实集成，因此返回空结果对象并记录 warning。
         logger.warning("MinerU provider is not yet fully implemented")
         return OCRLayoutResult(engine_name=self.name)

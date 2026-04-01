@@ -17,6 +17,7 @@ _REPO_SUFFIXES = {
 
 
 def _classify(record: SourceRecord) -> SourceType:
+    # 先按后缀判断，再结合 MIME 类型兜底。
     path = Path(record.path)
     suffix = path.suffix.lower()
     mime = (record.mime_type or "").lower()
@@ -30,6 +31,7 @@ def _classify(record: SourceRecord) -> SourceType:
 
 
 def run(sources: list[SourceRecord]) -> list[SourceProfile]:
+    # 为每个 source 生成统一 profile，供下游步骤分流使用。
     return [
         SourceProfile(
             source_id=record.source_id,

@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 def _evaluate_unit(unit: TranscriptEvidence) -> UnitDecision:
+    # 对单条证据从 secrets/safety/privacy/compliance/text_scan 多维打分。
     scores: dict[str, float] = {}
     reasons: list[str] = []
 
@@ -39,6 +40,7 @@ def _evaluate_unit(unit: TranscriptEvidence) -> UnitDecision:
         scores["privacy"] = 1.0
 
     if any(any(token in lic.license_expression.lower() for token in ["gpl", "agpl"]) for hit in unit.compliance_hits for lic in hit.licenses):
+        # copyleft 信号作为较高风险合规提示。
         scores["compliance"] = 0.2
         reasons.append("copyleft license signal")
     else:
@@ -54,6 +56,7 @@ def _evaluate_unit(unit: TranscriptEvidence) -> UnitDecision:
         scores["text_scan"] = 1.0
 
     worst = min(scores.values()) if scores else 1.0
+    # 采用最差项原则得到最终 unit 级决策。
     if worst <= 0.0:
         decision = Decision.REJECT
     elif worst <= 0.3:
@@ -67,6 +70,7 @@ def _evaluate_unit(unit: TranscriptEvidence) -> UnitDecision:
 
 
 def _local_decision(bundle: EvidenceBundle) -> PolicyDecision:
+    # 本地决策：按优先级折叠 unit 决策得到 overall。
     decisions = [_evaluate_unit(unit) for unit in bundle.transcript_units]
     priority = {Decision.REJECT: 0, Decision.QUARANTINE: 1, Decision.REVIEW: 2, Decision.ALLOW: 3}
     overall = min((decision.decision for decision in decisions), key=lambda item: priority[item], default=Decision.ALLOW)
@@ -74,6 +78,7 @@ def _local_decision(bundle: EvidenceBundle) -> PolicyDecision:
 
 
 def _query_opa(bundle: EvidenceBundle, settings: Settings) -> PolicyDecision | None:
+    # 远程 OPA 决策：将证据包裁剪为策略输入结构后请求 OPA。
     try:
         import httpx
     except ImportError:
@@ -135,6 +140,7 @@ def _query_opa(bundle: EvidenceBundle, settings: Settings) -> PolicyDecision | N
             unit_decisions=decisions,
         )
     except Exception as exc:
+        # OPA 不可达或响应异常时，自动回退本地规则。
         logger.warning("OPA evaluation failed, fallback to local rules: %s", exc)
         return None
 
@@ -144,6 +150,7 @@ def run(bundle: EvidenceBundle, settings: Settings | None = None) -> PolicyDecis
         from audio.config.settings import get_settings
         settings = get_settings()
     if settings.opa_enabled:
+        # 优先尝试 OPA；失败再回退本地规则，保证稳定产出决策。
         opa_result = _query_opa(bundle, settings)
         if opa_result is not None:
             return opa_result

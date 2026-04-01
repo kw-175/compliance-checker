@@ -1,12 +1,16 @@
+# 音频归一化目标参数。
 normalize:
   sample_rate: 16000
   channels: 1
   codec: pcm_s16le
   extension: wav
 
+# 音频脱敏渲染参数模板。
 redaction:
   silence:
+    # 静音模式：命中区间音量置 0。
     volume: 0
   beep:
+    # 蜂鸣模式：命中区间叠加提示音。
     frequency: 1000
     volume: 0.4

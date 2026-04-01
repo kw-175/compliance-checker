@@ -2,12 +2,13 @@
 Tests for the policy engine.
 
 Validates that the configurable policy engine produces correct decisions:
-- clean → pass_raw
-- PII → pass_redacted
-- face → pass_redacted
-- explicit → drop
+- clean -> pass_raw
+- PII -> pass_redacted
+- face -> pass_redacted
+- explicit -> drop
 """
-
+# 中文说明：这组测试主要保护策略层的“决策优先级”和“阈值逻辑”。
+# 一旦 profile 默认值或 evaluate 逻辑被改坏，这里应当第一时间失败。
 from __future__ import annotations
 
 from pathlib import Path
@@ -28,6 +29,7 @@ CONFIGS_DIR = Path(__file__).resolve().parent.parent / "configs"
 
 @pytest.fixture
 def engine() -> ConfigurablePolicyEngine:
+    # 中文说明：所有测试复用同一个默认策略目录。
     return ConfigurablePolicyEngine(CONFIGS_DIR)
 
 
@@ -35,13 +37,13 @@ class TestPolicyDecisions:
     """Test policy evaluation decisions."""
 
     def test_clean_image_passes_raw(self, engine: ConfigurablePolicyEngine):
-        """No findings → pass_raw."""
+        """No findings -> pass_raw."""
         result = engine.evaluate([], None, "default_cn_enterprise")
         assert result.decision == DecisionType.PASS_RAW
         assert len(result.reason_codes) == 0
 
     def test_pii_triggers_redaction(self, engine: ConfigurablePolicyEngine):
-        """PII finding → pass_redacted."""
+        """PII finding -> pass_redacted."""
         findings = [
             PictureFinding(
                 finding_type=FindingType.TEXT_PII,
@@ -56,7 +58,7 @@ class TestPolicyDecisions:
         assert "PII_PHONE" in result.reason_codes
 
     def test_face_triggers_redaction(self, engine: ConfigurablePolicyEngine):
-        """Face finding → pass_redacted."""
+        """Face finding -> pass_redacted."""
         findings = [
             PictureFinding(
                 finding_type=FindingType.VISION_OBJECT,
@@ -72,7 +74,7 @@ class TestPolicyDecisions:
         assert "VISION_FACE" in result.reason_codes
 
     def test_explicit_triggers_drop(self, engine: ConfigurablePolicyEngine):
-        """Explicit safety moderation → drop."""
+        """Explicit safety moderation -> drop."""
         moderation = PictureModerationResult(
             is_safe=False,
             categories=[SafetyCategory.EXPLICIT],
@@ -84,7 +86,7 @@ class TestPolicyDecisions:
         assert "SAFETY_EXPLICIT" in result.reason_codes
 
     def test_violence_triggers_drop(self, engine: ConfigurablePolicyEngine):
-        """Graphic violence → drop."""
+        """Graphic violence -> drop."""
         moderation = PictureModerationResult(
             is_safe=False,
             categories=[SafetyCategory.GRAPHIC_VIOLENCE],
@@ -96,6 +98,7 @@ class TestPolicyDecisions:
 
     def test_drop_overrides_redaction(self, engine: ConfigurablePolicyEngine):
         """DROP should override REDACTED when both are triggered."""
+        # 中文说明：这个测试保护“优先级”而不是某一个单点规则。
         findings = [
             PictureFinding(
                 finding_type=FindingType.TEXT_PII,
@@ -119,7 +122,7 @@ class TestPolicyDecisions:
             PictureFinding(
                 finding_type=FindingType.TEXT_PII,
                 category="phone_number",
-                score=0.1,  # Below threshold
+                score=0.1,
                 reason_code="PII_PHONE",
             )
         ]
@@ -131,7 +134,7 @@ class TestPolicyDecisions:
         moderation = PictureModerationResult(
             is_safe=False,
             categories=[SafetyCategory.EXPLICIT],
-            scores={"explicit": 0.3},  # Below 0.7 threshold
+            scores={"explicit": 0.3},
             reason_codes=["SAFETY_EXPLICIT"],
         )
         result = engine.evaluate([], moderation, "default_cn_enterprise")
@@ -139,6 +142,7 @@ class TestPolicyDecisions:
 
     def test_multiple_findings_combined(self, engine: ConfigurablePolicyEngine):
         """Multiple findings should produce correct combined decision."""
+        # 中文说明：该用例验证多来源 finding 会共同影响最终决策。
         findings = [
             PictureFinding(
                 finding_type=FindingType.TEXT_PII,
@@ -166,5 +170,6 @@ class TestPolicyDecisions:
     def test_nonexistent_profile_raises(self, engine: ConfigurablePolicyEngine):
         """Nonexistent profile should raise ConfigurationError."""
         from picture.domain.exceptions import ConfigurationError
+
         with pytest.raises(ConfigurationError):
             engine.evaluate([], None, "nonexistent_profile")

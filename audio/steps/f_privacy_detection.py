@@ -30,6 +30,7 @@ _REPLACEMENTS = {
 
 
 def _get_analyzer(settings: Settings):
+    # 懒加载 Presidio 分析器，避免每次调用重复初始化 NLP 引擎。
     global _analyzer
     if _analyzer is not None:
         return _analyzer
@@ -66,12 +67,14 @@ def _get_analyzer(settings: Settings):
             )
             _analyzer.registry.add_recognizer(recognizer)
         except Exception as exc:
+            # 自定义模型注册失败时保留内置识别器继续运行。
             logger.warning("PII model registration failed, fallback to built-ins: %s", exc)
 
     return _analyzer
 
 
 def _get_anonymizer():
+    # 懒加载匿名化引擎，保持与 analyzer 生命周期一致。
     global _anonymizer
     if _anonymizer is not None:
         return _anonymizer
@@ -82,6 +85,7 @@ def _get_anonymizer():
 
 
 def _fallback_detect(text: str) -> list[PIIEntity]:
+    # 当 Presidio 不可用时，使用正则进行基础 PII 检测。
     entities: list[PIIEntity] = []
     for entity_type, pattern in [
         ("EMAIL_ADDRESS", _EMAIL_RE),
@@ -116,6 +120,7 @@ def _presidio_detect(text: str, analyzer, settings: Settings) -> list[PIIEntity]
             )
             candidates.extend(rows)
         except Exception as exc:
+            # 某语言检测失败不影响其他语言继续执行。
             logger.debug("Presidio language pass failed (%s): %s", lang, exc)
 
     # Keep higher-score non-overlapping entities.
@@ -141,6 +146,7 @@ def _presidio_detect(text: str, analyzer, settings: Settings) -> list[PIIEntity]
 
 
 def _to_time(unit: DedupTranscriptUnit, start: int, end: int) -> tuple[float, float]:
+    # 将文本字符偏移近似映射为音频时间区间，用于后续音频脱敏。
     if not unit.text or len(unit.text) == 0:
         return unit.start_time, unit.end_time
     duration = max(unit.end_time - unit.start_time, 0.0)
@@ -153,6 +159,7 @@ def _to_time(unit: DedupTranscriptUnit, start: int, end: int) -> tuple[float, fl
 
 
 def _redact_text(text: str, entities: list[PIIEntity]) -> str:
+    # 纯文本替换兜底实现，不依赖外部匿名化组件。
     if not entities:
         return text
     parts: list[str] = []
@@ -166,6 +173,7 @@ def _redact_text(text: str, entities: list[PIIEntity]) -> str:
 
 
 def _presidio_redact(text: str, entities: list[PIIEntity], anonymizer) -> str:
+    # 使用 Presidio 按实体类型执行可配置替换。
     if not entities:
         return text
     from presidio_anonymizer.entities import OperatorConfig
@@ -207,6 +215,7 @@ def run(units: list[DedupTranscriptUnit], settings: Settings | None = None) -> t
         analyzer = _get_analyzer(settings)
         anonymizer = _get_anonymizer()
     except Exception as exc:
+        # 依赖缺失时自动切换到正则兜底，确保流程可用。
         logger.warning("Presidio unavailable, fallback to regex detectors: %s", exc)
         use_presidio = False
 
@@ -215,6 +224,7 @@ def run(units: list[DedupTranscriptUnit], settings: Settings | None = None) -> t
     for unit in units:
         if unit.is_duplicate:
             continue
+        # 优先 Presidio；若无结果或不可用，则退化到正则检测。
         entities = _presidio_detect(unit.text, analyzer, settings) if use_presidio else _fallback_detect(unit.text)
         if not entities and use_presidio:
             entities = _fallback_detect(unit.text)
@@ -234,6 +244,7 @@ def run(units: list[DedupTranscriptUnit], settings: Settings | None = None) -> t
         )
         for entity in entities:
             start_time, end_time = _to_time(unit, entity.start, entity.end)
+            # 为每个实体输出独立时间跨度，供音频层精准处理。
             spans.append(
                 RedactionSpan(
                     source_id=unit.source_id,

@@ -23,17 +23,20 @@ from audio.models.schemas import (
     TranscriptEvidence,
 )
 
+# 固定测试资源目录。
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 SAMPLE_AUDIO = FIXTURES_DIR / "sample_audio.wav"
 
 
 @pytest.fixture
 def sample_audio_path() -> str:
+    # 返回测试音频绝对路径，减少相对路径影响。
     return str(SAMPLE_AUDIO.resolve())
 
 
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
+    # 构造轻量测试配置，关闭重型模型与远程依赖。
     return Settings(
         work_dir=tmp_path / "work",
         qwen_asr_enabled=False,
@@ -45,6 +48,7 @@ def settings(tmp_path: Path) -> Settings:
 
 
 def test_source_intake(sample_audio_path: str):
+    # 验证源采集能正确读取输入音频并填充基础元数据。
     from audio.steps.a_source_intake import run
 
     records = run([sample_audio_path])
@@ -53,6 +57,7 @@ def test_source_intake(sample_audio_path: str):
 
 
 def test_audio_normalize(sample_audio_path: str, settings: Settings, tmp_path: Path):
+    # 验证归一化步骤能够产出可访问的目标音频文件。
     from audio.models.schemas import SourceProfile
     from audio.steps.c0_audio_normalize import run
 
@@ -63,14 +68,17 @@ def test_audio_normalize(sample_audio_path: str, settings: Settings, tmp_path: P
 
 
 def test_asr_fallback(monkeypatch, settings: Settings):
+    # 验证 ASR 回退链路：Qwen 失败后切到 faster-whisper。
     from audio.steps import c1_asr_transcribe
 
     record = NormalizedAudioRecord(source_id="src-001", original_path="orig.wav", normalized_path="norm.wav", duration_seconds=2.0)
 
     def fail_qwen(*args, **kwargs):
+        # 模拟主引擎不可用。
         raise RuntimeError("qwen unavailable")
 
     def fake_whisper(*args, **kwargs):
+        # 模拟次级引擎返回单段转写。
         return [ASRSegment(source_id="src-001", start_time=0.0, end_time=1.0, text="fallback transcript", confidence=0.8, engine_name="faster-whisper")]
 
     monkeypatch.setattr(c1_asr_transcribe, "_run_qwen_asr", fail_qwen)
@@ -82,6 +90,7 @@ def test_asr_fallback(monkeypatch, settings: Settings):
 
 
 def test_diarization_fallback(settings: Settings):
+    # 验证说话人分离失败时使用默认 speaker_0。
     from audio.steps.c1b_diarization import run
 
     record = NormalizedAudioRecord(source_id="src-001", original_path="orig.wav", normalized_path="norm.wav", duration_seconds=3.2)
@@ -91,6 +100,7 @@ def test_diarization_fallback(settings: Settings):
 
 
 def test_transcript_build():
+    # 验证 transcript 构建时能正确关联说话人。
     from audio.steps.c2_transcript_build import run
 
     asr_segments = [ASRSegment(source_id="src-001", start_time=0.0, end_time=1.0, text="hello world", confidence=0.9, engine_name="test")]
@@ -101,6 +111,7 @@ def test_transcript_build():
 
 
 def test_keyword_and_regex_scan(settings: Settings):
+    # 验证关键词和正则扫描都能命中预期文本。
     from audio.steps.e1a_keyword_scan import run as keyword_run
     from audio.steps.e1b_regex_scan import run as regex_run
 
@@ -112,6 +123,7 @@ def test_keyword_and_regex_scan(settings: Settings):
 
 
 def test_evidence_aggregation():
+    # 验证多路证据可正确汇总并生成 summary 统计。
     from audio.steps.h_evidence_aggregation import run
 
     units = [DedupTranscriptUnit(unit_id="u1", source_id="src-001", start_time=0.0, end_time=1.0, speaker_id="speaker_0", text="text")]
@@ -130,6 +142,7 @@ def test_evidence_aggregation():
 
 
 def test_local_rule_decision(settings: Settings):
+    # 验证本地策略规则在 secret 命中场景下给出 reject。
     from audio.steps.i_policy_decision import run
 
     bundle = EvidenceBundle(pipeline_run_id="run-001", transcript_units=[TranscriptEvidence(unit_id="u1", source_id="src-001", text="dangerous", secret_hits=[SecretHit(source_id="src-001", detector_type="aws")])], summary={})
@@ -138,6 +151,7 @@ def test_local_rule_decision(settings: Settings):
 
 
 def test_policy_opa_fallback(settings: Settings, monkeypatch):
+    # 验证 OPA 开启但查询失败时会自动回退本地决策。
     from audio.steps import i_policy_decision
 
     bundle = EvidenceBundle(
@@ -153,6 +167,7 @@ def test_policy_opa_fallback(settings: Settings, monkeypatch):
     )
 
     def fake_query(*args, **kwargs):
+        # 强制模拟 OPA 无结果。
         return None
 
     monkeypatch.setattr(i_policy_decision, "_query_opa", fake_query)
@@ -161,6 +176,7 @@ def test_policy_opa_fallback(settings: Settings, monkeypatch):
 
 
 def test_audio_redaction_copy_strategy(settings: Settings, tmp_path: Path):
+    # 验证 copy 策略下不做渲染，直接生成拷贝文件。
     from audio.models.schemas import RenderStrategy
     from audio.steps.k_audio_redaction import run
 
@@ -195,6 +211,7 @@ def test_audio_redaction_copy_strategy(settings: Settings, tmp_path: Path):
 
 
 def test_pipeline_integration(sample_audio_path: str, settings: Settings):
+    # 集成测试：执行完整 pipeline 并断言最终产物存在。
     from audio.pipeline import AudioCompliancePipeline
 
     pipeline = AudioCompliancePipeline(settings=settings)
@@ -204,6 +221,7 @@ def test_pipeline_integration(sample_audio_path: str, settings: Settings):
 
 
 def test_health_endpoint():
+    # 验证健康检查接口可正常响应。
     from audio.server import app
 
     client = TestClient(app)

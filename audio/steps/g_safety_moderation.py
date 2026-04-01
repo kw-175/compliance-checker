@@ -19,6 +19,7 @@ _CONTROVERSIAL = {"political", "protest", "censorship", "classified"}
 
 
 def _load_model(settings: Settings):
+    # 懒加载大模型与 tokenizer，避免重复占用显存/内存。
     global _model, _tokenizer
     if _model is not None:
         return _model, _tokenizer
@@ -41,6 +42,7 @@ def _load_model(settings: Settings):
 
 
 def _parse_output(raw: str) -> tuple[SafetyLevel, list[str]]:
+    # 从模型自然语言输出中提取安全等级与风险类别。
     raw_lower = raw.lower()
     if "unsafe" in raw_lower:
         level = SafetyLevel.UNSAFE
@@ -69,6 +71,7 @@ def _parse_output(raw: str) -> tuple[SafetyLevel, list[str]]:
 
 
 def _classify_with_model(text: str, model, tokenizer, device: str) -> tuple[SafetyLevel, list[str], str]:
+    # 通过结构化提示词约束模型输出格式，便于后处理解析。
     import torch
 
     prompt = (
@@ -96,6 +99,7 @@ def _classify_with_model(text: str, model, tokenizer, device: str) -> tuple[Safe
 
 
 def _mock_classify(text: str) -> tuple[SafetyLevel, list[str], str]:
+    # 模型不可用时的轻量关键词兜底分类。
     lower = text.lower()
     for keyword in _UNSAFE:
         if keyword in lower:
@@ -123,11 +127,13 @@ def run(results: list[PrivacyResult], settings: Settings | None = None) -> list[
 
                 device = "cuda" if torch.cuda.is_available() else "cpu"
         except Exception as exc:
+            # 任何模型加载失败都自动回落到 mock 规则。
             logger.warning("Qwen guard unavailable, fallback to mock moderation: %s", exc)
             use_model = False
 
     output: list[SafetyResult] = []
     for result in results:
+        # 优先使用脱敏文本参与审核，降低 PII 泄漏风险。
         text = result.redacted_text or result.original_text
         if use_model and model is not None and tokenizer is not None:
             level, categories, raw = _classify_with_model(text, model, tokenizer, device)

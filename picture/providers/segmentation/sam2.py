@@ -3,7 +3,8 @@ SAM 2 segmentation provider skeleton.
 
 Requires: segment-anything-2 (or sam2), torch
 """
-
+# 中文说明：该 provider 用于把检测框进一步细化成更贴合目标边界的区域。
+# 在脱敏场景里，这一步通常用于减少“框太大导致误伤”的问题。
 from __future__ import annotations
 
 import logging
@@ -34,9 +35,11 @@ class SAM2SegmentationProvider(SegmentationProvider):
         if self._predictor is None:
             try:
                 from sam2.sam2_image_predictor import SAM2ImagePredictor  # type: ignore[import-untyped]
+
                 self._predictor = SAM2ImagePredictor.from_pretrained(self._model_id)
             except ImportError:
                 from picture.domain.exceptions import ProviderNotAvailableError
+
                 raise ProviderNotAvailableError("SAM 2 (segment-anything-2)")
         return self._predictor
 
@@ -51,9 +54,12 @@ class SAM2SegmentationProvider(SegmentationProvider):
         try:
             from PIL import Image
             import numpy as np
+
+            # 中文说明：SAM 通常接收 RGB 数组输入，因此这里先把图片转成 numpy 数组。
             image = np.array(Image.open(image_path).convert("RGB"))
         except ImportError:
             from picture.domain.exceptions import ProviderNotAvailableError
+
             raise ProviderNotAvailableError("Pillow (PIL)")
 
         predictor.set_image(image)
@@ -68,27 +74,34 @@ class SAM2SegmentationProvider(SegmentationProvider):
                 multimask_output=False,
             )
 
-            # Use highest-scoring mask
+            # 中文说明：当前实现只取单框预测下的最高分 mask。
             best_mask = masks[0]
             best_score = float(scores[0])
 
-            # Convert mask to polygon (simplified)
+            # 中文说明：为了保持模型输出结构简单，这里没有做精细轮廓提取，
+            # 而是把 mask 的最小外接矩形转成 polygon。
             from picture.domain.models import Polygon
+
             ys, xs = np.where(best_mask)
             if len(xs) > 0:
-                polygon = Polygon(points=[
-                    (float(xs.min()), float(ys.min())),
-                    (float(xs.max()), float(ys.min())),
-                    (float(xs.max()), float(ys.max())),
-                    (float(xs.min()), float(ys.max())),
-                ])
+                polygon = Polygon(
+                    points=[
+                        (float(xs.min()), float(ys.min())),
+                        (float(xs.max()), float(ys.min())),
+                        (float(xs.max()), float(ys.max())),
+                        (float(xs.min()), float(ys.max())),
+                    ]
+                )
             else:
+                # 中文说明：理论上如果 mask 为空，polygon 就无法构造，保留 None 即可。
                 polygon = None
 
-            refined.append(RegionMask(
-                bbox=bbox,
-                polygon=polygon,
-                confidence=best_score,
-            ))
+            refined.append(
+                RegionMask(
+                    bbox=bbox,
+                    polygon=polygon,
+                    confidence=best_score,
+                )
+            )
 
         return refined

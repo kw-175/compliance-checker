@@ -3,7 +3,8 @@ Mock vision detector for testing and local development.
 
 Returns deterministic detection results with common sensitive object types.
 """
-
+# 中文说明：mock 视觉检测器用于在不接真实检测模型时，仍然能跑通整条 picture 流水线。
+# 它返回固定结果，适合测试策略、脱敏和 API 输出结构。
 from __future__ import annotations
 
 import logging
@@ -34,8 +35,10 @@ class MockVisionDetector(VisionDetector):
         logger.info("[MockVision] Detecting objects in: %s", image_path)
 
         if not self._return_detections:
+            # 中文说明：测试里可以通过这个开关模拟“没有任何检测结果”的情况。
             return []
 
+        # 中文说明：这里返回几类常见的敏感目标，覆盖人脸、二维码、签名三种典型场景。
         return [
             PictureFinding(
                 finding_type=FindingType.VISION_OBJECT,

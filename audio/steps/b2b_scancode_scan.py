@@ -20,6 +20,7 @@ _ELIGIBLE_TYPES = {SourceType.REPO, SourceType.ARCHIVE, SourceType.MIXED}
 
 
 def _run_scancode(binary: str, target_path: str, output_file: str) -> dict[str, Any]:
+    # ScanCode 结果写入 JSON 文件，再由本步骤读取并结构化。
     result = run_command(
         [
             binary,
@@ -40,11 +41,13 @@ def _run_scancode(binary: str, target_path: str, output_file: str) -> dict[str, 
         with open(output_file, "r", encoding="utf-8") as handle:
             return json.load(handle)
     except (FileNotFoundError, json.JSONDecodeError):
+        # 输出文件缺失或损坏时记异常并返回空结果，交由上游降级处理。
         logger.exception("Failed to read ScanCode output for %s", target_path)
         return {}
 
 
 def _parse_licenses(file_entry: dict[str, Any]) -> list[LicenseMatch]:
+    # 将 ScanCode 的检测结果归一成统一 LicenseMatch 列表。
     licenses: list[LicenseMatch] = []
     for detection in file_entry.get("license_detections", []):
         matches = detection.get("matches") or [detection]
@@ -63,6 +66,7 @@ def _parse_licenses(file_entry: dict[str, Any]) -> list[LicenseMatch]:
 
 
 def _parse_result(source_id: str, profile_path: str, payload: dict[str, Any]) -> list[ComplianceHit]:
+    # 仅保留有合规价值的信息：许可证、版权、扫描错误。
     hits: list[ComplianceHit] = []
     for file_entry in payload.get("files", []):
         if file_entry.get("type") not in {None, "file"}:
@@ -89,6 +93,7 @@ def _parse_result(source_id: str, profile_path: str, payload: dict[str, Any]) ->
 
 
 def run(profiles: list[SourceProfile], settings: Settings) -> list[ComplianceHit]:
+    # 对可扫描类型逐个执行 ScanCode，并聚合为统一命中结果。
     hits: list[ComplianceHit] = []
     for profile in profiles:
         if profile.source_type not in _ELIGIBLE_TYPES:
@@ -103,6 +108,7 @@ def run(profiles: list[SourceProfile], settings: Settings) -> list[ComplianceHit
             if payload:
                 hits.extend(_parse_result(profile.source_id, profile.path, payload))
         finally:
+            # 无论成功失败都清理临时文件。
             output_path.unlink(missing_ok=True)
     logger.info("ScanCode scan complete: %d compliance hits", len(hits))
     return hits

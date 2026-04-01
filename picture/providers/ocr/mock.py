@@ -4,6 +4,7 @@ Mock OCR/layout analysis provider for testing and local development.
 Returns deterministic OCR results with sample text blocks that include
 common PII patterns for end-to-end pipeline testing.
 """
+# 中文说明：这是测试用 OCR 模拟实现，用固定文本块来驱动后续 PII 和脱敏链路。
 
 from __future__ import annotations
 
@@ -19,6 +20,8 @@ class MockOCRLayoutProvider(OCRLayoutProvider):
     """Mock OCR provider that returns pre-defined text blocks."""
 
     def __init__(self, return_pii: bool = True) -> None:
+        # 中文说明：return_pii 为 True 时返回包含敏感信息样例的 OCR 结果，
+        # 方便驱动下游 PII 检测和脱敏链路。
         self._return_pii = return_pii
 
     @property
@@ -32,6 +35,8 @@ class MockOCRLayoutProvider(OCRLayoutProvider):
         blocks: list[OCRTextBlock] = []
 
         if self._return_pii:
+            # 中文说明：这一组样例文本故意包含手机号、邮箱、证件号、地址等模式，
+            # 用于验证文本 PII 检测是否能正确命中。
             blocks = [
                 OCRTextBlock(
                     text="张三",
@@ -65,6 +70,8 @@ class MockOCRLayoutProvider(OCRLayoutProvider):
                 ),
             ]
         else:
+            # 中文说明：关闭 return_pii 时返回相对干净的文本内容，
+            # 用来测试“有 OCR 但不触发 PII”的路径。
             blocks = [
                 OCRTextBlock(
                     text="Company Annual Report 2025",
@@ -80,6 +87,7 @@ class MockOCRLayoutProvider(OCRLayoutProvider):
                 ),
             ]
 
+        # 中文说明：full_text 是把 block 文本拼成的一整段，便于 PII 检测器整体扫描。
         full_text = "\n".join(b.text for b in blocks)
         regions = [
             LayoutRegion(
@@ -89,6 +97,7 @@ class MockOCRLayoutProvider(OCRLayoutProvider):
             )
         ]
 
+        # 中文说明：mock provider 只构造一个大文本区域即可，重点是保证数据结构完整。
         return OCRLayoutResult(
             full_text=full_text,
             text_blocks=blocks,

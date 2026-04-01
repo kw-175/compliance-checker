@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 def _fallback_segments(record: NormalizedAudioRecord) -> list[SpeakerSegment]:
+    # 无法分离说话人时，整段归为默认说话人。
     return [
         SpeakerSegment(
             source_id=record.source_id,
@@ -26,6 +27,7 @@ def _fallback_segments(record: NormalizedAudioRecord) -> list[SpeakerSegment]:
 
 
 def _run_pyannote(record: NormalizedAudioRecord, settings: Settings) -> list[SpeakerSegment]:
+    # 主路径：调用 pyannote 进行说话人分离。
     try:
         from pyannote.audio import Pipeline
     except ImportError as exc:
@@ -34,6 +36,7 @@ def _run_pyannote(record: NormalizedAudioRecord, settings: Settings) -> list[Spe
     diarization = pipeline(record.normalized_path)
     segments: list[SpeakerSegment] = []
     for turn, _, speaker in diarization.itertracks(yield_label=True):
+        # 将 pyannote 片段统一转换为 SpeakerSegment。
         segments.append(
             SpeakerSegment(
                 source_id=record.source_id,
@@ -48,6 +51,7 @@ def _run_pyannote(record: NormalizedAudioRecord, settings: Settings) -> list[Spe
 
 
 def run(records: list[NormalizedAudioRecord], settings: Settings) -> list[SpeakerSegment]:
+    # 每条音频独立处理，失败后回退到单说话人占位。
     all_segments: list[SpeakerSegment] = []
     for record in records:
         segments: list[SpeakerSegment] = []

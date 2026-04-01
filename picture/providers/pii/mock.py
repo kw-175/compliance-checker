@@ -4,6 +4,7 @@ Mock PII detector for testing and local development.
 Uses regex patterns to detect common Chinese PII types:
 phone numbers, email, ID card numbers, bank card numbers, license plates.
 """
+# 中文说明：这是基于正则的中文 PII 模拟检测器，主要用于本地联调与回归测试。
 
 from __future__ import annotations
 
@@ -16,7 +17,8 @@ from picture.providers.base import PIIDetector
 
 logger = logging.getLogger(__name__)
 
-# Regex patterns for common Chinese PII
+# 中文说明：这里集中维护 mock PII 的正则模式。
+# 它们不追求真实生产级精度，而是要稳定覆盖常见敏感信息类型，便于测试。
 _PATTERNS: list[tuple[PIIEntityType, str, re.Pattern[str]]] = [
     (PIIEntityType.PHONE_NUMBER, "PII_PHONE",
      re.compile(r"1[3-9]\d{9}")),
@@ -47,6 +49,7 @@ class MockPIIDetector(PIIDetector):
         logger.info("[MockPII] Scanning text of length %d", len(text))
         findings: list[PictureFinding] = []
 
+        # 中文说明：逐类模式扫描文本，每命中一次就生成一个统一的 PictureFinding。
         for entity_type, reason_code, pattern in _PATTERNS:
             for match in pattern.finditer(text):
                 findings.append(PictureFinding(
@@ -54,10 +57,12 @@ class MockPIIDetector(PIIDetector):
                     category=entity_type.value,
                     label=f"PII: {entity_type.value}",
                     score=0.95,
+                    # 中文说明：text_span 保留原始命中文本，方便后续审计与回显。
                     text_span=match.group(),
                     reason_code=reason_code,
                     provider=self.name,
                     metadata={
+                        # 中文说明：字符级起止位置便于把文本命中重新映射回 OCR block。
                         "char_start": match.start(),
                         "char_end": match.end(),
                     },

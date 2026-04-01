@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def _probe_with_ffprobe(path: Path, settings: Settings) -> dict[str, object]:
+    # 优先使用 ffprobe 获取精确音频参数。
     result = run_command(
         [
             settings.ffprobe_bin,
@@ -44,11 +45,13 @@ def _probe_with_ffprobe(path: Path, settings: Settings) -> dict[str, object]:
             "duration_seconds": float(fmt.get("duration", 0.0) or 0.0),
         }
     except Exception:
+        # 解析失败时返回空，由上层继续尝试 wave 探测。
         logger.debug("ffprobe output parse failed for %s", path)
         return {}
 
 
 def _probe_with_wave(path: Path) -> dict[str, object]:
+    # 纯 Python 兜底探测，仅对 WAV 等标准容器可用。
     try:
         with wave.open(str(path), "rb") as handle:
             frames = handle.getnframes()
@@ -64,6 +67,7 @@ def _probe_with_wave(path: Path) -> dict[str, object]:
 
 
 def run(profiles: list[SourceProfile], settings: Settings, output_dir: Path) -> list[NormalizedAudioRecord]:
+    # 从 YAML 读取归一化目标参数，便于按项目策略调整。
     profiles_cfg = load_yaml(settings.ffmpeg_profiles_file)
     normalize_cfg = profiles_cfg.get("normalize", {})
     target_rate = int(normalize_cfg.get("sample_rate", 16000))
@@ -77,6 +81,7 @@ def run(profiles: list[SourceProfile], settings: Settings, output_dir: Path) -> 
 
     for profile in profiles:
         if profile.source_type != SourceType.AUDIO:
+            # 仅处理音频类型输入。
             continue
         source_path = Path(profile.path)
         output_path = normalized_dir / f"{profile.source_id}.{target_ext}"
@@ -97,6 +102,7 @@ def run(profiles: list[SourceProfile], settings: Settings, output_dir: Path) -> 
             timeout=600,
         )
         if result is None:
+            # ffmpeg 失败时保底复制原文件，保持流程可继续。
             shutil.copy2(source_path, output_path)
             engine_name = "copy_fallback"
         else:

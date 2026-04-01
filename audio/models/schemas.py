@@ -13,9 +13,11 @@ from pydantic import BaseModel, Field
 
 
 def _utcnow() -> datetime:
+    # 统一使用 UTC 时间戳，避免跨时区比较带来的歧义。
     return datetime.now(timezone.utc)
 
 
+# 输入源类型枚举：用于前期分类与后续步骤分流。
 class SourceType(str, Enum):
     AUDIO = "audio"
     ARCHIVE = "archive"
@@ -49,6 +51,7 @@ class TaskStatus(str, Enum):
     FAILED = "failed"
 
 
+# 源文件登记信息（入口步骤输出）。
 class SourceRecord(BaseModel):
     source_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     path: str
@@ -58,6 +61,7 @@ class SourceRecord(BaseModel):
     created_at: datetime = Field(default_factory=_utcnow)
 
 
+# 源分类结果，补充类型与元数据。
 class SourceProfile(BaseModel):
     source_id: str
     path: str
@@ -66,6 +70,7 @@ class SourceProfile(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+# 密钥/凭据类命中记录。
 class SecretHit(BaseModel):
     source_id: str
     detector_type: str = ""
@@ -78,6 +83,7 @@ class SecretHit(BaseModel):
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
+# 单条许可证匹配片段。
 class LicenseMatch(BaseModel):
     license_expression: str = ""
     spdx_id: str = ""
@@ -87,6 +93,7 @@ class LicenseMatch(BaseModel):
     end_line: int = 0
 
 
+# 合规扫描命中，可能来自同一源中的多个文件。
 class ComplianceHit(BaseModel):
     source_id: str
     file_path: str = ""
@@ -95,6 +102,7 @@ class ComplianceHit(BaseModel):
     scan_errors: list[str] = Field(default_factory=list)
 
 
+# 归一化音频信息（后续 ASR/脱敏基准输入）。
 class NormalizedAudioRecord(BaseModel):
     source_id: str
     original_path: str
@@ -107,6 +115,7 @@ class NormalizedAudioRecord(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+# ASR 时间片段。
 class ASRSegment(BaseModel):
     segment_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     source_id: str
@@ -119,6 +128,7 @@ class ASRSegment(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+# 说话人分离片段。
 class SpeakerSegment(BaseModel):
     speaker_segment_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     source_id: str
@@ -129,6 +139,7 @@ class SpeakerSegment(BaseModel):
     engine_name: str = ""
 
 
+# 统一转写单元（融合 ASR 与说话人信息）。
 class TranscriptUnit(BaseModel):
     unit_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     source_id: str
@@ -142,6 +153,7 @@ class TranscriptUnit(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+# 去重后的转写单元，记录重复关系。
 class DedupTranscriptUnit(BaseModel):
     unit_id: str
     source_id: str
@@ -155,12 +167,14 @@ class DedupTranscriptUnit(BaseModel):
     duplicate_of: Optional[str] = None
 
 
+# 去重映射记录（当前 unit 指向原始 unit）。
 class DedupMapEntry(BaseModel):
     unit_id: str
     duplicate_of: str
     jaccard_similarity: float = 0.0
 
 
+# 关键词命中证据。
 class KeywordHit(BaseModel):
     unit_id: str
     keyword: str
@@ -169,6 +183,7 @@ class KeywordHit(BaseModel):
     context: str = ""
 
 
+# 正则命中证据。
 class RegexHit(BaseModel):
     unit_id: str
     pattern_name: str
@@ -179,6 +194,7 @@ class RegexHit(BaseModel):
     context: str = ""
 
 
+# 单条 PII 实体识别结果。
 class PIIEntity(BaseModel):
     entity_type: str
     start: int
@@ -187,6 +203,7 @@ class PIIEntity(BaseModel):
     original_text: str = ""
 
 
+# 需要在音频层进行替换/静音的时间区间。
 class RedactionSpan(BaseModel):
     source_id: str
     unit_id: str
@@ -197,6 +214,7 @@ class RedactionSpan(BaseModel):
     replacement: str
 
 
+# 文本隐私检测与脱敏结果。
 class PrivacyResult(BaseModel):
     unit_id: str
     source_id: str
@@ -206,6 +224,7 @@ class PrivacyResult(BaseModel):
     pii_count: int = 0
 
 
+# 文本安全审核结果。
 class SafetyResult(BaseModel):
     unit_id: str
     source_id: str
@@ -215,6 +234,7 @@ class SafetyResult(BaseModel):
     score: float = 1.0
 
 
+# 面向策略引擎的单转写单元证据聚合结构。
 class TranscriptEvidence(BaseModel):
     unit_id: str
     source_id: str
@@ -229,6 +249,7 @@ class TranscriptEvidence(BaseModel):
     safety: Optional[SafetyResult] = None
 
 
+# 全量证据包：策略决策输入主对象。
 class EvidenceBundle(BaseModel):
     pipeline_run_id: str
     created_at: datetime = Field(default_factory=_utcnow)
@@ -236,6 +257,7 @@ class EvidenceBundle(BaseModel):
     summary: dict[str, Any] = Field(default_factory=dict)
 
 
+# 单转写单元的最终策略决策。
 class UnitDecision(BaseModel):
     unit_id: str
     decision: Decision = Decision.REVIEW
@@ -243,6 +265,7 @@ class UnitDecision(BaseModel):
     scores: dict[str, float] = Field(default_factory=dict)
 
 
+# 全局策略决策输出。
 class PolicyDecision(BaseModel):
     pipeline_run_id: str
     overall_decision: Decision = Decision.REVIEW
@@ -250,6 +273,7 @@ class PolicyDecision(BaseModel):
     evaluated_at: datetime = Field(default_factory=_utcnow)
 
 
+# 脱敏音频产物记录。
 class RedactedAudioRecord(BaseModel):
     source_id: str
     original_audio_path: str

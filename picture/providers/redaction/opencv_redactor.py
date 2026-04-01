@@ -4,7 +4,8 @@ OpenCV/Pillow based image redaction renderer.
 Supports: black_box, gaussian_blur, pixelate, solid_fill.
 Falls back to Pillow if OpenCV is unavailable.
 """
-
+# 中文说明：该 redactor 负责把结构化的脱敏操作真正渲染到图像上。
+# 它是 picture 模块里“把合规判断落地成可交付产物”的最后一步。
 from __future__ import annotations
 
 import logging
@@ -29,6 +30,7 @@ class OpenCVRedactor(Redactor):
     """
 
     def __init__(self, fill_color: tuple[int, int, int] = (128, 128, 128)) -> None:
+        # 中文说明：fill_color 主要给 solid_fill 模式使用。
         self._fill_color = fill_color
 
     def redact(
@@ -41,12 +43,13 @@ class OpenCVRedactor(Redactor):
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
         if not operations:
-            # No redactions needed, just copy
+            # 中文说明：没有脱敏动作时直接复制原图，避免无意义地重新编码图像。
             import shutil
+
             shutil.copy2(image_path, output_path)
             return output_path
 
-        # Try OpenCV first
+        # 中文说明：优先走 OpenCV，因为它在大图处理和局部操作上通常更高效。
         try:
             return self._redact_opencv(image_path, operations, output_path)
         except ImportError:
@@ -70,6 +73,7 @@ class OpenCVRedactor(Redactor):
         h, w = img.shape[:2]
 
         for op in operations:
+            # 中文说明：允许某些 operation 被标记为未应用，用于保留审计记录但跳过执行。
             if not op.applied:
                 continue
 
@@ -79,30 +83,45 @@ class OpenCVRedactor(Redactor):
             x2 = min(w, int(bbox.x + bbox.w))
             y2 = min(h, int(bbox.y + bbox.h))
 
+            # 中文说明：无效区域直接跳过，避免切片报错。
             if x2 <= x1 or y2 <= y1:
                 continue
 
             if op.mode == RedactionMode.BLACK_BOX:
+                # 中文说明：黑框模式是最保守的遮挡策略。
                 cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 0), -1)
 
             elif op.mode == RedactionMode.GAUSSIAN_BLUR:
+                # 中文说明：模糊核必须是奇数，这里动态根据区域大小生成合适的核尺寸。
                 roi = img[y1:y2, x1:x2]
                 ksize = max(51, ((min(x2 - x1, y2 - y1) // 2) | 1))
                 blurred = cv2.GaussianBlur(roi, (ksize, ksize), 30)
                 img[y1:y2, x1:x2] = blurred
 
             elif op.mode == RedactionMode.PIXELATE:
+                # 中文说明：像素化通过先缩小再放大实现，放大时使用最近邻保持马赛克效果。
                 roi = img[y1:y2, x1:x2]
                 rh, rw = roi.shape[:2]
                 block_size = max(8, min(rw, rh) // 6)
-                small = cv2.resize(roi, (max(1, rw // block_size), max(1, rh // block_size)),
-                                   interpolation=cv2.INTER_LINEAR)
-                pixelated = cv2.resize(small, (rw, rh), interpolation=cv2.INTER_NEAREST)
+                small = cv2.resize(
+                    roi,
+                    (max(1, rw // block_size), max(1, rh // block_size)),
+                    interpolation=cv2.INTER_LINEAR,
+                )
+                pixelated = cv2.resize(
+                    small,
+                    (rw, rh),
+                    interpolation=cv2.INTER_NEAREST,
+                )
                 img[y1:y2, x1:x2] = pixelated
 
             elif op.mode == RedactionMode.SOLID_FILL:
-                # BGR format for OpenCV
-                color = (self._fill_color[2], self._fill_color[1], self._fill_color[0])
+                # 中文说明：OpenCV 使用 BGR 顺序，因此这里需要把 RGB 颜色反转。
+                color = (
+                    self._fill_color[2],
+                    self._fill_color[1],
+                    self._fill_color[0],
+                )
                 cv2.rectangle(img, (x1, y1), (x2, y2), color, -1)
 
         cv2.imwrite(output_path, img)
@@ -142,14 +161,19 @@ class OpenCVRedactor(Redactor):
                 roi = img.crop((x1, y1, x2, y2))
                 blurred = roi.filter(ImageFilter.GaussianBlur(radius=30))
                 img.paste(blurred, (x1, y1))
-                draw = ImageDraw.Draw(img)  # refresh draw object
+
+                # 中文说明：Pillow 在 paste 后原来的 draw 对象不会自动感知像素变化，
+                # 因此这里重新创建，避免后续绘制状态不一致。
+                draw = ImageDraw.Draw(img)
 
             elif op.mode == RedactionMode.PIXELATE:
                 roi = img.crop((x1, y1, x2, y2))
                 rw, rh = roi.size
                 block_size = max(8, min(rw, rh) // 6)
-                small = roi.resize((max(1, rw // block_size), max(1, rh // block_size)),
-                                   Image.BILINEAR)
+                small = roi.resize(
+                    (max(1, rw // block_size), max(1, rh // block_size)),
+                    Image.BILINEAR,
+                )
                 pixelated = small.resize((rw, rh), Image.NEAREST)
                 img.paste(pixelated, (x1, y1))
                 draw = ImageDraw.Draw(img)
@@ -158,7 +182,11 @@ class OpenCVRedactor(Redactor):
                 draw.rectangle([x1, y1, x2, y2], fill=self._fill_color)
 
         img.save(output_path)
-        logger.info("Redacted image (Pillow) saved to %s (%d operations)", output_path, len(operations))
+        logger.info(
+            "Redacted image (Pillow) saved to %s (%d operations)",
+            output_path,
+            len(operations),
+        )
         return output_path
 
     def render_overlay(
@@ -175,7 +203,7 @@ class OpenCVRedactor(Redactor):
             overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
             draw = ImageDraw.Draw(overlay)
 
-            # Colors for different modes
+            # 中文说明：不同模式使用不同叠加颜色，便于调试时快速区分脱敏策略。
             color_map = {
                 RedactionMode.BLACK_BOX: (255, 0, 0, 80),
                 RedactionMode.GAUSSIAN_BLUR: (0, 0, 255, 80),
@@ -190,7 +218,12 @@ class OpenCVRedactor(Redactor):
                 x1, y1 = int(bbox.x), int(bbox.y)
                 x2, y2 = int(bbox.x + bbox.w), int(bbox.y + bbox.h)
                 color = color_map.get(op.mode, (255, 0, 0, 80))
-                draw.rectangle([x1, y1, x2, y2], fill=color, outline=color[:3] + (200,), width=2)
+                draw.rectangle(
+                    [x1, y1, x2, y2],
+                    fill=color,
+                    outline=color[:3] + (200,),
+                    width=2,
+                )
 
             result = Image.alpha_composite(img, overlay).convert("RGB")
             result.save(output_path)
@@ -198,5 +231,6 @@ class OpenCVRedactor(Redactor):
             return output_path
 
         except ImportError:
+            # 中文说明：没有 Pillow 时就退化为普通脱敏输出，至少保证接口可用。
             logger.warning("Pillow not available for overlay rendering")
             return self.redact(image_path, operations, output_path)

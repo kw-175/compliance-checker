@@ -19,6 +19,7 @@ def run(
     safety_results: list[SafetyResult],
     pipeline_run_id: str,
 ) -> EvidenceBundle:
+    # 先构建索引结构，降低后续按 unit/source 关联成本。
     secrets_by_source: dict[str, list[SecretHit]] = defaultdict(list)
     for hit in secret_hits:
         secrets_by_source[hit.source_id].append(hit)
@@ -40,6 +41,7 @@ def run(
 
     evidence_units: list[TranscriptEvidence] = []
     for unit in units:
+        # 将多路扫描结果汇总为单 unit 的完整证据视图。
         evidence_units.append(
             TranscriptEvidence(
                 unit_id=unit.unit_id,
@@ -57,6 +59,7 @@ def run(
         )
 
     safety_counts = Counter(item.safety_level.value for item in safety_results)
+    # summary 作为策略决策与审计报表的快速统计入口。
     return EvidenceBundle(
         pipeline_run_id=pipeline_run_id,
         transcript_units=evidence_units,

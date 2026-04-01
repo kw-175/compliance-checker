@@ -15,6 +15,7 @@ def run(
     redacted_audio: list[RedactedAudioRecord],
     audit_metadata: dict,
 ) -> ReleasePackage:
+    # 复用 evidence summary 中关键统计，组装最终交付对象。
     summary = evidence_bundle.summary
     return ReleasePackage(
         pipeline_run_id=pipeline_run_id,

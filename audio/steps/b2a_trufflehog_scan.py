@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 def _run_trufflehog(binary: str, target_path: str) -> list[dict[str, Any]]:
+    # TruffleHog 以 JSONL 逐行输出，返回码 1 可能代表发现命中，属于可接受状态。
     result = run_command(
         [binary, "filesystem", target_path, "--json", "--no-update"],
         ok_returncodes=(0, 1),
@@ -32,11 +33,13 @@ def _run_trufflehog(binary: str, target_path: str) -> list[dict[str, Any]]:
         try:
             findings.append(json.loads(line))
         except json.JSONDecodeError:
+            # 单行格式异常直接跳过，避免影响整体扫描结果。
             logger.debug("Skipping malformed TruffleHog line for %s", target_path)
     return findings
 
 
 def _parse_finding(source_id: str, source_path: str, payload: dict[str, Any]) -> SecretHit:
+    # 兼容 TruffleHog 输出层级，提取统一 SecretHit 字段。
     filesystem = payload.get("SourceMetadata", {}).get("Data", {}).get("Filesystem", {})
     return SecretHit(
         source_id=source_id,
@@ -52,6 +55,7 @@ def _parse_finding(source_id: str, source_path: str, payload: dict[str, Any]) ->
 
 
 def run(sources: list[SourceRecord], settings: Settings) -> list[SecretHit]:
+    # 按目录扫描避免重复工作，再按文件路径映射回 source_id。
     hits: list[SecretHit] = []
     scanned_dirs: set[str] = set()
     path_to_source: dict[str, SourceRecord] = {}
@@ -62,6 +66,7 @@ def run(sources: list[SourceRecord], settings: Settings) -> list[SecretHit]:
     for source in sources:
         target_dir = str(Path(source.path).resolve().parent)
         if target_dir in scanned_dirs:
+            # 同目录仅扫描一次，避免重复触发外部扫描器。
             continue
         scanned_dirs.add(target_dir)
 
@@ -69,6 +74,7 @@ def run(sources: list[SourceRecord], settings: Settings) -> list[SecretHit]:
         for payload in findings:
             finding_file = payload.get("SourceMetadata", {}).get("Data", {}).get("Filesystem", {}).get("file", "")
             resolved_file = str(Path(finding_file).resolve()) if finding_file else ""
+            # 若无法精确回溯到文件，回退关联当前 source。
             matched_source = path_to_source.get(resolved_file, source)
             hits.append(_parse_finding(matched_source.source_id, matched_source.path, payload))
 

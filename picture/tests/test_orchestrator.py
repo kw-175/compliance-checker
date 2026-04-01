@@ -4,7 +4,8 @@ Tests for the picture compliance orchestrator.
 Covers all three processing chains (document, natural, mixed)
 using mock providers to ensure CI compatibility.
 """
-
+# 中文说明：这组测试是 picture 模块的主流程回归测试。
+# 它重点验证 orchestrator 在不同 route 下能否串起各个 provider 并产出正确状态和决策。
 from __future__ import annotations
 
 from pathlib import Path
@@ -34,6 +35,7 @@ FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 @pytest.fixture
 def settings(tmp_path: Path) -> PictureSettings:
     """Create test settings with temp directory."""
+    # 中文说明：把工作目录和存储目录都隔离到临时目录，避免测试间互相污染。
     return PictureSettings(
         work_dir=tmp_path / "work",
         storage_base_path=tmp_path / "storage",
@@ -47,8 +49,12 @@ def repo() -> InMemoryJobRepository:
 
 
 @pytest.fixture
-def orchestrator(settings: PictureSettings, repo: InMemoryJobRepository) -> PictureComplianceOrchestrator:
+def orchestrator(
+    settings: PictureSettings,
+    repo: InMemoryJobRepository,
+) -> PictureComplianceOrchestrator:
     """Create orchestrator with all mock providers."""
+    # 中文说明：这里显式注入 mock provider，确保 CI 环境不依赖真实模型。
     return PictureComplianceOrchestrator(
         router=HeuristicRouter(),
         preprocessor=DefaultPreprocessor(),
@@ -78,7 +84,10 @@ def _make_job(image_path: str, route_hint: str = "auto") -> PictureJob:
 class TestDocumentChain:
     """Tests for the document image processing chain."""
 
-    def test_document_chain_produces_redacted(self, orchestrator: PictureComplianceOrchestrator):
+    def test_document_chain_produces_redacted(
+        self,
+        orchestrator: PictureComplianceOrchestrator,
+    ):
         """Document chain with PII should produce pass_redacted."""
         image_path = str(FIXTURES_DIR / "sample_document.png")
         job = _make_job(image_path, route_hint="document")
@@ -90,12 +99,16 @@ class TestDocumentChain:
         assert len(result.findings) > 0
         assert result.report_uri is not None
 
-    def test_document_chain_records_latencies(self, orchestrator: PictureComplianceOrchestrator):
+    def test_document_chain_records_latencies(
+        self,
+        orchestrator: PictureComplianceOrchestrator,
+    ):
         """Document chain should record step latencies."""
         image_path = str(FIXTURES_DIR / "sample_document.png")
         job = _make_job(image_path, route_hint="document")
         result = orchestrator.execute(job)
 
+        # 中文说明：这些关键耗时字段存在，说明链路上的核心步骤都被执行并记录了。
         assert "total" in result.step_latencies
         assert "preprocess" in result.step_latencies
         assert "ocr_layout" in result.step_latencies
@@ -104,18 +117,25 @@ class TestDocumentChain:
 class TestNaturalChain:
     """Tests for the natural image processing chain."""
 
-    def test_natural_safe_image_redacted(self, orchestrator: PictureComplianceOrchestrator):
-        """Natural safe image with vision findings → pass_redacted."""
+    def test_natural_safe_image_redacted(
+        self,
+        orchestrator: PictureComplianceOrchestrator,
+    ):
+        """Natural safe image with vision findings should pass_redacted."""
         image_path = str(FIXTURES_DIR / "sample_natural.png")
         job = _make_job(image_path, route_hint="natural")
         result = orchestrator.execute(job)
 
         assert result.status == JobStatus.DONE
         assert result.policy_result is not None
-        # MockVisionDetector returns face/qr/signature → should be redacted
+        # 中文说明：MockVisionDetector 会固定返回 face/qr/signature，
+        # 因此自然图即便是 safe，也应走 PASS_REDACTED。
         assert result.policy_result.decision == DecisionType.PASS_REDACTED
 
-    def test_natural_explicit_image_dropped(self, orchestrator: PictureComplianceOrchestrator):
+    def test_natural_explicit_image_dropped(
+        self,
+        orchestrator: PictureComplianceOrchestrator,
+    ):
         """Natural explicit image should be dropped."""
         image_path = str(FIXTURES_DIR / "sample_unsafe_explicit.png")
         job = _make_job(image_path, route_hint="natural")
@@ -129,7 +149,10 @@ class TestNaturalChain:
 class TestMixedChain:
     """Tests for the mixed screenshot processing chain."""
 
-    def test_mixed_chain_runs_parallel(self, orchestrator: PictureComplianceOrchestrator):
+    def test_mixed_chain_runs_parallel(
+        self,
+        orchestrator: PictureComplianceOrchestrator,
+    ):
         """Mixed chain should run OCR and safety in parallel."""
         image_path = str(FIXTURES_DIR / "sample_mixed.png")
         job = _make_job(image_path, route_hint="mixed")
@@ -141,15 +164,20 @@ class TestMixedChain:
         assert result.moderation_result is not None
         assert "phase1_parallel" in result.step_latencies
 
-    def test_mixed_chain_merges_findings(self, orchestrator: PictureComplianceOrchestrator):
+    def test_mixed_chain_merges_findings(
+        self,
+        orchestrator: PictureComplianceOrchestrator,
+    ):
         """Mixed chain should merge PII and vision findings."""
         image_path = str(FIXTURES_DIR / "sample_mixed.png")
         job = _make_job(image_path, route_hint="mixed")
         result = orchestrator.execute(job)
 
-        # Should have both PII and vision findings
+        # 中文说明：mixed 场景理论上应同时得到文本与视觉两侧的 finding。
         pii_findings = [f for f in result.findings if f.finding_type.value == "text_pii"]
-        vision_findings = [f for f in result.findings if f.finding_type.value == "vision_object"]
+        vision_findings = [
+            f for f in result.findings if f.finding_type.value == "vision_object"
+        ]
         assert len(pii_findings) > 0
         assert len(vision_findings) > 0
 
@@ -164,7 +192,6 @@ class TestAutoRouting:
         result = orchestrator.execute(job)
 
         assert result.route is not None
-        # The exact route depends on heuristics, but it should complete
         assert result.status in (JobStatus.DONE, JobStatus.DROPPED)
 
     def test_auto_route_natural(self, orchestrator: PictureComplianceOrchestrator):
@@ -182,6 +209,7 @@ class TestOrchestrationWithFactory:
 
     def test_create_orchestrator_and_run(self, settings: PictureSettings):
         """Test creating orchestrator via factory and running a job."""
+        # 中文说明：这个测试保护 use_cases 层的“默认装配逻辑”。
         orchestrator = create_orchestrator(settings)
         image_path = str(FIXTURES_DIR / "sample_document.png")
         job = _make_job(image_path, route_hint="document")
@@ -206,7 +234,10 @@ class TestErrorHandling:
         """Job with unsupported MIME type should fail."""
         job = PictureJob(
             tenant_id="test",
-            source=SourceSpec(uri=str(FIXTURES_DIR / "sample_document.png"), mime_type="video/mp4"),
+            source=SourceSpec(
+                uri=str(FIXTURES_DIR / "sample_document.png"),
+                mime_type="video/mp4",
+            ),
             profile="default_cn_enterprise",
         )
         result = orchestrator.execute(job)
@@ -214,7 +245,11 @@ class TestErrorHandling:
         assert result.status == JobStatus.FAILED
         assert "unsupported" in (result.error or "").lower()
 
-    def test_nonexistent_profile(self, settings: PictureSettings, repo: InMemoryJobRepository):
+    def test_nonexistent_profile(
+        self,
+        settings: PictureSettings,
+        repo: InMemoryJobRepository,
+    ):
         """Job with nonexistent profile should fail."""
         orch = PictureComplianceOrchestrator(
             router=HeuristicRouter(),

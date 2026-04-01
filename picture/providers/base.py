@@ -4,7 +4,8 @@ Abstract base interfaces for all picture compliance providers.
 Every concrete provider must implement one of these interfaces.
 Business logic depends on these abstractions, never on concrete implementations.
 """
-
+# 中文说明：这一层定义了 picture 模块所有 provider 的抽象契约。
+# application 层只依赖这些接口，因此具体实现可以在 mock、开源模型、商用服务之间切换。
 from __future__ import annotations
 
 import abc
@@ -26,7 +27,11 @@ class Router(abc.ABC):
     """Classifies an image into a route type."""
 
     @abc.abstractmethod
-    def classify(self, image_path: str, metadata: dict[str, Any] | None = None) -> RouteType:
+    def classify(
+        self,
+        image_path: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> RouteType:
         """Return the route type for the given image."""
         ...
 
@@ -45,7 +50,9 @@ class Preprocessor(abc.ABC):
 
     def extract_pdf_pages(self, pdf_path: str, output_dir: str) -> list[str]:
         """Extract pages from a PDF as images. Default: not supported."""
+        # 中文说明：PDF 拆页不是所有预处理器都支持，所以默认抛“不支持”异常。
         from picture.domain.exceptions import UnsupportedMediaError
+
         raise UnsupportedMediaError("application/pdf")
 
 
@@ -60,6 +67,7 @@ class OCRLayoutProvider(abc.ABC):
     @property
     def name(self) -> str:
         """Provider name for audit logging."""
+        # 中文说明：默认直接使用类名作为 provider 标识，便于日志和报告记录。
         return self.__class__.__name__
 
 
@@ -138,6 +146,8 @@ class Redactor(abc.ABC):
         output_path: str,
     ) -> str:
         """Render an overlay visualization image (optional capability)."""
+        # 中文说明：overlay 是一个可选能力，默认直接复用 redact 逻辑；
+        # 具体 redactor 可以自行覆盖为更适合调试展示的实现。
         return self.redact(image_path, operations, output_path)
 
 

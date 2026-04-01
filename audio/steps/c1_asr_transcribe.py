@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 def _load_sidecar_segments(record: NormalizedAudioRecord) -> list[ASRSegment]:
+    # 优先读取旁路转写文件，便于离线测试与无模型环境回放。
     candidates = [
         Path(record.original_path).with_suffix(".transcript.jsonl"),
         Path(record.original_path).with_name(f"{Path(record.original_path).stem}_transcript.jsonl"),
@@ -40,11 +41,13 @@ def _load_sidecar_segments(record: NormalizedAudioRecord) -> list[ASRSegment]:
                 payload["segment_id"] = str(row.get("segment_id"))
             segments.append(ASRSegment(**payload))
         if segments:
+            # 只要某个候选文件有有效片段即立即返回。
             return segments
     return []
 
 
 def _run_qwen_asr(record: NormalizedAudioRecord, settings: Settings) -> list[ASRSegment]:
+    # 主 ASR 路径：基于 transformers + Qwen ASR 模型推理。
     try:
         from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
     except ImportError as exc:
@@ -62,6 +65,7 @@ def _run_qwen_asr(record: NormalizedAudioRecord, settings: Settings) -> list[ASR
     output = asr(record.normalized_path)
     chunks = output.get("chunks") or []
     if not chunks and output.get("text"):
+        # 若模型未返回分段，退化为单段覆盖整段音频。
         chunks = [{"timestamp": (0.0, record.duration_seconds), "text": output.get("text", "")}]
     return [
         ASRSegment(
@@ -79,6 +83,7 @@ def _run_qwen_asr(record: NormalizedAudioRecord, settings: Settings) -> list[ASR
 
 
 def _run_faster_whisper(record: NormalizedAudioRecord, settings: Settings) -> list[ASRSegment]:
+    # 次级 ASR 路径：Qwen 不可用时回退到 faster-whisper。
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:
@@ -102,6 +107,7 @@ def _run_faster_whisper(record: NormalizedAudioRecord, settings: Settings) -> li
 
 
 def _fallback_segments(record: NormalizedAudioRecord) -> list[ASRSegment]:
+    # 最终兜底：旁路转写 > 占位文本，保证下游结构完整。
     sidecar = _load_sidecar_segments(record)
     if sidecar:
         return sidecar
@@ -118,6 +124,7 @@ def _fallback_segments(record: NormalizedAudioRecord) -> list[ASRSegment]:
 
 
 def run(records: list[NormalizedAudioRecord], settings: Settings) -> list[ASRSegment]:
+    # 每条音频按“Qwen -> Whisper -> Fallback”顺序尝试。
     all_segments: list[ASRSegment] = []
     for record in records:
         segments: list[ASRSegment] = []
@@ -125,6 +132,7 @@ def run(records: list[NormalizedAudioRecord], settings: Settings) -> list[ASRSeg
             try:
                 segments = _run_qwen_asr(record, settings)
             except Exception as exc:
+                # 单引擎失败只记录告警，不中断当前音频处理。
                 logger.warning("Qwen ASR failed for %s: %s", record.source_id, exc)
         if not segments and settings.faster_whisper_enabled:
             try:

@@ -3,7 +3,8 @@ Grounding DINO vision detection provider skeleton.
 
 Requires: groundingdino, transformers, torch
 """
-
+# 中文说明：Grounding DINO 这类开放词表检测器适合“类别集合会持续扩展”的场景。
+# 当前这里仍是骨架实现，先把接口和依赖边界固定下来。
 from __future__ import annotations
 
 import logging
@@ -40,8 +41,10 @@ class GroundingDINOVisionDetector(VisionDetector):
             import groundingdino  # type: ignore[import-untyped]  # noqa: F401
         except ImportError:
             from picture.domain.exceptions import ProviderNotAvailableError
+
             raise ProviderNotAvailableError("Grounding DINO (groundingdino)")
 
-        # TODO: Implement Grounding DINO integration
+        # 中文说明：这里暂未真正接入推理逻辑，只保留依赖检查与统一返回接口。
+        # 后续落地时，需要把 text_prompt 检测结果映射成 PictureFinding 列表。
         logger.warning("Grounding DINO provider is not yet fully implemented")
         return []
