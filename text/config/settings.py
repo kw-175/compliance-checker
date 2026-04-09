@@ -170,6 +170,28 @@ class Settings(BaseSettings):
         description="Set False to use local rule-engine fallback",
     )
 
+    # ─── 策略 Profile 与运行语义配置 ─────────────────────
+    # 策略 Profile 名称（对应 YAML 配置文件，支持按场景差异化）
+    policy_profile: str = Field(
+        default="default",
+        description="Policy profile name (maps to {profiles_dir}/{name}.yaml)",
+    )
+    # 策略 Profile 目录
+    policy_profiles_dir: Path = Field(
+        default=Path(__file__).resolve().parent / "profiles",
+        description="Directory containing policy profile YAML files",
+    )
+    # 默认失败处理策略：fail_closed(保守) 或 fail_open(放行)
+    default_failure_policy: str = Field(
+        default="fail_closed",
+        description="Default failure policy: fail_closed | fail_open",
+    )
+    # 是否保留原始文本（不做破坏性脱敏替换）
+    preserve_original_text: bool = Field(
+        default=True,
+        description="If True, PII redaction outputs span annotations instead of replacing text",
+    )
+
     # ─── 步骤 J: OpenLineage 血缘审计 ───────────────────
     # OpenLineage 用于记录每个步骤的数据血缘信息
     # 设为 None 使用 ConsoleTransport（输出到控制台）

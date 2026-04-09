@@ -1,4 +1,4 @@
-﻿"""Pipeline orchestrator for video compliance checking."""
+"""Pipeline orchestrator for video compliance checking."""
 
 from __future__ import annotations
 
@@ -31,6 +31,11 @@ from video.config.settings import Settings, get_settings
 from video.domain.enums import VideoDecisionType, VideoJobStatus
 from video.domain.models import VideoAsset, VideoJob, VideoReport
 
+# 统一契约层导入
+from common.contracts import ComplianceOutput
+from common.enums import Modality, TrustLevel, UnifiedDecision
+from common.runtime import PipelineExecutionContext, TrustEvaluator
+
 logger = logging.getLogger(__name__)
 
 
@@ -45,6 +50,8 @@ class VideoCompliancePipeline:
         self.output_dir = self.settings.work_dir / self.run_id
         # 统一通过本地存储后端持久化可交付产物。
         self.storage = LocalFileStorageBackend(self.settings.storage_base_path)
+        # 统一执行上下文（记录步骤状态、降级事件、失败信息）
+        self.exec_ctx: PipelineExecutionContext | None = None
 
     def execute(
         self,
@@ -63,6 +70,8 @@ class VideoCompliancePipeline:
         total_start = time.monotonic()
 
         try:
+            # 初始化执行上下文
+            self.exec_ctx = PipelineExecutionContext(pipeline_run_id=job.job_id)
             # 1) 统一准备输入源（复制文件或引用目录）。
             prepared_source = prepare_input_source(input_path, self.output_dir / "input")
             job.asset = VideoAsset(original_uri=prepared_source)
@@ -164,6 +173,12 @@ class VideoCompliancePipeline:
                         raise
                     logger.exception("Audio sidecar processing failed for %s", audio_path)
                     job.asset.metadata["audio_error"] = "sidecar_processing_failed"
+                    # 记录音轨处理降级事件
+                    if self.exec_ctx:
+                        self.exec_ctx.record_step_failure(
+                            "audio_sidecar",
+                            error="sidecar_processing_failed",
+                        )
                 job.step_latencies["audio_pipeline"] = (time.monotonic() - audio_start) * 1000
 
             # 6) 聚合 picture+audio 的决策得到视频级最终策略。
@@ -225,6 +240,11 @@ class VideoCompliancePipeline:
             job.completed_at = datetime.now(timezone.utc)
             job.step_latencies["total"] = (time.monotonic() - total_start) * 1000
             self._set_status(job, VideoJobStatus.DROPPED if job.policy_result and job.policy_result.decision == VideoDecisionType.DROP else VideoJobStatus.DONE)
+
+            # ── 统一契约输出构建 ────────────────────────
+            compliance_output = self._build_compliance_output(job)
+            job._compliance_output = compliance_output
+
             return job
 
         except Exception as exc:
@@ -242,6 +262,82 @@ class VideoCompliancePipeline:
         job.status = status
         job.updated_at = datetime.now(timezone.utc)
 
+    def _build_compliance_output(self, job: VideoJob) -> ComplianceOutput:
+        """构建统一契约输出（双轨交付物）。"""
+        from common.adapters import (
+            build_annotation_package,
+            build_audit_package,
+            build_compliance_output,
+            build_release_package,
+            deduplicate_evidence_units,
+            map_video_decision_to_unified,
+            video_finding_to_evidence,
+        )
+        from common.policy import evaluate_with_profile, load_policy_profile
+
+        # 1. 转换 VideoFinding → EvidenceUnit
+        evidence_units = [video_finding_to_evidence(f) for f in job.findings]
+        evidence_units = deduplicate_evidence_units(evidence_units)
+
+        # 2. Profile 化策略评估
+        ctx = self.exec_ctx or PipelineExecutionContext(pipeline_run_id=job.job_id)
+        profile = load_policy_profile("default")
+        policy_result = evaluate_with_profile(
+            evidence_units, profile=profile,
+            degrade_events=ctx.degrade_events,
+        )
+        trust_level = TrustEvaluator.evaluate(ctx)
+        unified_decision = policy_result.decision
+
+        # 3. 标注样本包
+        content_uri = job.asset.compliant_video_uri or job.asset.original_uri if job.asset else ""
+        annotation_pkg = build_annotation_package(
+            modality=Modality.VIDEO,
+            pipeline_run_id=job.job_id,
+            clean_content_uri=content_uri,
+            content_format=job.mime_type or "video/mp4",
+            evidence_units=evidence_units,
+            decision=unified_decision,
+            trust_level=trust_level,
+        )
+
+        # 4. 审计证据包
+        audit_pkg = build_audit_package(
+            modality=Modality.VIDEO,
+            pipeline_run_id=job.job_id,
+            evidence_units=evidence_units,
+            degrade_events=ctx.degrade_events,
+            policy_result=policy_result,
+            ctx=ctx,
+        )
+
+        # 5. 组装发布包
+        release_pkg = build_release_package(
+            modality=Modality.VIDEO,
+            pipeline_run_id=job.job_id,
+            annotation_package=annotation_pkg,
+            audit_package=audit_pkg,
+            decision=unified_decision,
+            trust_level=trust_level,
+        )
+
+        # 6. 填充双轨交付物 URI 到 job
+        job.annotation_package_uri = content_uri
+        job.audit_package_uri = job.asset.report_uri if job.asset else ""
+        job.trust_level = trust_level.value
+
+        legacy = job.policy_result.model_dump() if job.policy_result else None
+        return build_compliance_output(
+            pipeline_run_id=job.job_id,
+            modality=Modality.VIDEO,
+            decision=unified_decision,
+            trust_level=trust_level,
+            release_package=release_pkg,
+            degrade_summary=policy_result.degrade_summary,
+            review_suggestions=policy_result.review_suggestions,
+            explanation_summary=audit_pkg.review_summary,
+            legacy_decision=legacy,
+        )
 
 def _choose_audio_for_render(original_audio_path: str, redacted_audio_path: str | None, audio_decision: AudioDecision | None) -> str | None:
     # 脱敏音轨优先；其次仅在允许场景下回退到原始音轨。

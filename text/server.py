@@ -131,13 +131,20 @@ def _run_pipeline(task_id: str, input_paths: list[str], config_overrides: dict[s
         # 创建并执行流水线
         pipeline = CompliancePipeline(settings=settings)
         pipeline.run_id = task_id  # 使用任务 ID 作为运行 ID
-        decision = pipeline.execute(input_paths)
+        compliance_output = pipeline.execute(input_paths)
 
         # 更新任务状态为已完成
-        task.result = decision
+        # 存储完整的 ComplianceOutput 对象
+        task.result = compliance_output.legacy_decision  # 保留旧接口兼容性
+        task._compliance_output = compliance_output       # 新增：完整输出
         task.status = TaskStatus.COMPLETED
-        task.completed_at = datetime.now(timezone.utc)  # 使用 timezone-aware datetime
-        logger.info("任务 %s 完成: %s", task_id[:8], decision.overall_decision.value)
+        task.completed_at = datetime.now(timezone.utc)
+        logger.info(
+            "任务 %s 完成: decision=%s, trust=%s",
+            task_id[:8],
+            compliance_output.decision.value,
+            compliance_output.trust_level.value,
+        )
 
     except Exception as e:
         # 更新任务状态为失败
@@ -238,13 +245,31 @@ async def get_task_result(task_id: str):
     if task.status == TaskStatus.FAILED:
         raise HTTPException(status_code=500, detail=f"任务失败: {task.error}")
 
-    return {
+    # 构建增强结果（包含统一契约字段 + 向后兼容字段）
+    response = {
         "task_id": task.task_id,
         "status": task.status.value,
         "created_at": task.created_at.isoformat(),
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,
-        "result": task.result.model_dump() if task.result else None,
     }
+
+    # 统一输出（新接口）
+    co = getattr(task, "_compliance_output", None)
+    if co:
+        response.update({
+            "decision": co.decision.value,
+            "trust_level": co.trust_level.value,
+            "degrade_summary": co.degrade_summary,
+            "review_suggestions": co.review_suggestions,
+            "explanation_summary": co.explanation_summary,
+            "annotation_package_uri": co.annotation_package_uri,
+            "audit_package_uri": co.audit_package_uri,
+        })
+
+    # 向后兼容（旧接口）
+    response["legacy_decision"] = task.result.model_dump() if task.result else co.legacy_decision if co else None
+
+    return response
 
 
 @app.get("/api/v1/tasks")

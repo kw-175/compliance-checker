@@ -80,6 +80,10 @@ class VideoFinding(BaseModel):
     moderation: PictureModerationResult | None = None
     reason_code: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # ── 新增：provider 追溯与可解释性 ──
+    provider_version: str = ""
+    confidence: float = 0.0
+    explanation: str = ""
 
 
 class VideoPolicyResult(BaseModel):
@@ -91,6 +95,10 @@ class VideoPolicyResult(BaseModel):
     profile: str = "default_cn_enterprise"
     evaluated_at: datetime = Field(default_factory=_utcnow)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # ── 新增：可信等级与评分分解 ──
+    trust_level: str = "full"
+    score_breakdown: dict[str, Any] | None = None
+    degrade_summary: str = ""
 
 
 class VideoReport(BaseModel):
@@ -106,6 +114,10 @@ class VideoReport(BaseModel):
     artifacts: dict[str, str] = Field(default_factory=dict)
     latency_ms: dict[str, float] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=_utcnow)
+    # ── 新增：降级事件、可信等级与复核摘要 ──
+    degrade_events: list[dict[str, Any]] = Field(default_factory=list)
+    trust_level: str = "full"
+    review_summary: str = ""
 
 
 class VideoJob(BaseModel):
@@ -137,3 +149,8 @@ class VideoJob(BaseModel):
 
     step_latencies: dict[str, float] = Field(default_factory=dict)
     provider_versions: dict[str, str] = Field(default_factory=dict)
+    # ── 新增：降级事件、可信等级与双轨交付物 ──
+    degrade_events: list[dict[str, Any]] = Field(default_factory=list)
+    trust_level: str = "full"
+    annotation_package_uri: str | None = None
+    audit_package_uri: str | None = None

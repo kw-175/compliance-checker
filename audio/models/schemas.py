@@ -222,6 +222,11 @@ class PrivacyResult(BaseModel):
     redacted_text: str = ""
     pii_entities: list[PIIEntity] = Field(default_factory=list)
     pii_count: int = 0
+    # ── 新增：保留原文标记与 provider 追溯 ──
+    original_text_preserved: bool = True
+    provider_name: str = ""
+    provider_version: str = ""
+    is_degraded: bool = False
 
 
 # 文本安全审核结果。
@@ -232,6 +237,12 @@ class SafetyResult(BaseModel):
     harm_categories: list[str] = Field(default_factory=list)
     raw_output: str = ""
     score: float = 1.0
+    # ── 新增：可解释性与 provider 追溯 ──
+    explanation: str = ""
+    provider_name: str = ""
+    model_version: str = ""
+    threshold_used: float = 0.0
+    is_degraded: bool = False
 
 
 # 面向策略引擎的单转写单元证据聚合结构。
@@ -247,6 +258,9 @@ class TranscriptEvidence(BaseModel):
     regex_hits: list[RegexHit] = Field(default_factory=list)
     privacy: Optional[PrivacyResult] = None
     safety: Optional[SafetyResult] = None
+    # ── 新增：降级事件与可信等级 ──
+    degrade_events: list[dict[str, Any]] = Field(default_factory=list)
+    trust_level: str = "full"
 
 
 # 全量证据包：策略决策输入主对象。
@@ -255,6 +269,9 @@ class EvidenceBundle(BaseModel):
     created_at: datetime = Field(default_factory=_utcnow)
     transcript_units: list[TranscriptEvidence] = Field(default_factory=list)
     summary: dict[str, Any] = Field(default_factory=dict)
+    # ── 新增：全局降级与可信等级 ──
+    degrade_events: list[dict[str, Any]] = Field(default_factory=list)
+    trust_level: str = "full"
 
 
 # 单转写单元的最终策略决策。
@@ -271,6 +288,10 @@ class PolicyDecision(BaseModel):
     overall_decision: Decision = Decision.REVIEW
     unit_decisions: list[UnitDecision] = Field(default_factory=list)
     evaluated_at: datetime = Field(default_factory=_utcnow)
+    # ── 新增：可信等级与降级摘要 ──
+    trust_level: str = "full"
+    degrade_summary: str = ""
+    profile_name: str = "default"
 
 
 # 脱敏音频产物记录。
@@ -293,6 +314,10 @@ class ReleasePackage(BaseModel):
     evidence_summary: dict[str, Any] = Field(default_factory=dict)
     redacted_audio: list[RedactedAudioRecord] = Field(default_factory=list)
     audit_metadata: dict[str, Any] = Field(default_factory=dict)
+    # ── 新增：双轨交付物 URI ──
+    annotation_package_uri: str = ""
+    audit_package_uri: str = ""
+    trust_level: str = "full"
 
 
 class CheckRequest(BaseModel):

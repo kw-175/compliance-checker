@@ -150,6 +150,10 @@ class PictureFinding(BaseModel):
 
     # 中文说明：provider 记录该 finding 来自哪个具体能力实现。
     provider: str = ""
+    # ── 新增：provider 追溯与可解释性 ──
+    provider_version: str = ""
+    threshold_used: float = 0.0
+    explanation: str = ""              # 人类可读的判定原因
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -207,6 +211,11 @@ class PictureReport(BaseModel):
     timestamps: dict[str, str] = Field(default_factory=dict)
     latency_ms: dict[str, float] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=_utcnow)
+    # ── 新增：降级事件、可信等级与复核摘要 ──
+    degrade_events: list[dict[str, Any]] = Field(default_factory=list)
+    trust_level: str = "full"
+    score_breakdown: Optional[dict[str, Any]] = None
+    review_summary: str = ""
 
 
 class PictureJob(BaseModel):
@@ -246,3 +255,9 @@ class PictureJob(BaseModel):
     # 中文说明：step_latencies 用于性能诊断，provider_versions 用于审计 provider 版本来源。
     step_latencies: dict[str, float] = Field(default_factory=dict)
     provider_versions: dict[str, str] = Field(default_factory=dict)
+
+    # ── 新增：降级事件、可信等级与双轨交付物 ──
+    degrade_events: list[dict[str, Any]] = Field(default_factory=list)
+    trust_level: str = "full"
+    annotation_package_uri: Optional[str] = None
+    audit_package_uri: Optional[str] = None

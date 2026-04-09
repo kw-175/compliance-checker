@@ -367,6 +367,10 @@ class PIIEntity(BaseModel):
     end: int
     score: float = 0.0
     original_text: str = ""
+    # ── 新增：替换建议（不直接替换原文，由下游决定）──
+    replacement_suggestion: str = ""   # 如 <PHONE>、<EMAIL>，留给标注系统决定是否应用
+    context_before: str = ""           # 命中前上下文（便于人工复核）
+    context_after: str = ""            # 命中后上下文
 
 
 class PrivacyResult(BaseModel):
@@ -387,6 +391,11 @@ class PrivacyResult(BaseModel):
     redacted_text: str = ""
     pii_entities: list[PIIEntity] = Field(default_factory=list)
     pii_count: int = 0
+    # ── 新增：保留原文标记与 provider 追溯 ──
+    original_text_preserved: bool = True  # True=原文未被破坏性替换
+    provider_name: str = ""               # 如 "presidio"
+    provider_version: str = ""            # provider 版本号
+    is_degraded: bool = False             # 是否使用了 fallback
 
 
 # ────────────────────────────────────────────────────────────
@@ -412,6 +421,12 @@ class SafetyResult(BaseModel):
     harm_categories: list[str] = Field(default_factory=list)
     raw_output: str = ""
     score: float = 1.0
+    # ── 新增：可解释性与 provider 追溯 ──
+    explanation: str = ""                 # 人类可读的判定原因
+    provider_name: str = ""               # 如 "qwen3guard" / "mock_keyword"
+    model_version: str = ""               # 模型版本号
+    threshold_used: float = 0.0           # 判定时使用的阈值
+    is_degraded: bool = False             # 是否使用了 mock/fallback
 
 
 # ────────────────────────────────────────────────────────────
@@ -445,6 +460,9 @@ class DocumentEvidence(BaseModel):
     regex_hits: list[RegexHit] = Field(default_factory=list)
     privacy: Optional[PrivacyResult] = None
     safety: Optional[SafetyResult] = None
+    # ── 新增：降级事件与可信等级 ──
+    degrade_events: list[dict[str, Any]] = Field(default_factory=list)
+    trust_level: str = "full"             # full/degraded/partial/unknown/untrusted
 
 
 class EvidenceBundle(BaseModel):
@@ -464,6 +482,9 @@ class EvidenceBundle(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     documents: list[DocumentEvidence] = Field(default_factory=list)
     summary: dict[str, Any] = Field(default_factory=dict)
+    # ── 新增：全局降级事件与可信等级 ──
+    degrade_events: list[dict[str, Any]] = Field(default_factory=list)
+    trust_level: str = "full"
 
 
 # ────────────────────────────────────────────────────────────
@@ -487,6 +508,10 @@ class DocumentDecision(BaseModel):
     decision: Decision = Decision.REVIEW
     reasons: list[str] = Field(default_factory=list)
     scores: dict[str, float] = Field(default_factory=dict)
+    # ── 新增：评分分解与规则轨迹 ──
+    score_breakdown: Optional[dict[str, Any]] = None   # ScoreBreakdown 序列化
+    rule_traces: list[dict[str, Any]] = Field(default_factory=list)
+    review_suggestions: list[str] = Field(default_factory=list)
 
 
 class PolicyDecision(BaseModel):
@@ -507,6 +532,10 @@ class PolicyDecision(BaseModel):
     document_decisions: list[DocumentDecision] = Field(default_factory=list)
     # 修正：使用 timezone-aware 的 datetime
     evaluated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # ── 新增：可信等级与降级摘要 ──
+    trust_level: str = "full"
+    degrade_summary: str = ""
+    profile_name: str = "default"
 
 
 # ────────────────────────────────────────────────────────────

@@ -324,17 +324,33 @@ def _analyze_and_redact(
     else:
         redacted_text = text
 
-    # 构建 PIIEntity 列表
-    pii_entities = [
-        PIIEntity(
+    # 构建 PIIEntity 列表（填充上下文和替换建议）
+    pii_entities = []
+    for r in deduped:
+        original = text[r.start : r.end][:100]
+        # 提取前后上下文（各 50 字符），便于人工复核
+        ctx_before = text[max(0, r.start - 50) : r.start]
+        ctx_after = text[r.end : r.end + 50]
+        # 替换建议（非侵入式）：不直接替换原文，由下游决定是否应用
+        replacement_map = {
+            "PHONE_NUMBER": "<PHONE>",
+            "EMAIL_ADDRESS": "<EMAIL>",
+            "CREDIT_CARD": "<CREDIT_CARD>",
+            "PERSON": "<PERSON>",
+            "LOCATION": "<LOCATION>",
+            "ORGANIZATION": "<ORG>",
+        }
+        suggestion = replacement_map.get(r.entity_type, "<REDACTED>")
+        pii_entities.append(PIIEntity(
             entity_type=r.entity_type,
             start=r.start,
             end=r.end,
             score=round(r.score, 4),
-            original_text=text[r.start : r.end][:100],  # 截断到 100 字符
-        )
-        for r in deduped
-    ]
+            original_text=original,
+            replacement_suggestion=suggestion,
+            context_before=ctx_before,
+            context_after=ctx_after,
+        ))
 
     return redacted_text, pii_entities
 
@@ -348,15 +364,16 @@ def _fallback_scan(documents: list[DedupDocument]) -> list[PrivacyResult]:
     Presidio 不可用时的简单透传 fallback。
 
     不进行任何 PII 检测或脱敏，直接将原始文本作为输出。
+    标记 is_degraded=True，供下游生成 DegradeEvent。
     仅用于开发/测试环境。
 
     Args:
         documents: 去重后的文档列表
 
     Returns:
-        PrivacyResult 列表（redacted_text = original_text）
+        PrivacyResult 列表（redacted_text = original_text, is_degraded=True）
     """
-    logger.warning("Presidio 不可用 – 文档将原样透传，不进行 PII 脱敏")
+    logger.warning("Presidio 不可用 – 文档将原样透传，不进行 PII 脱敏（已标记 is_degraded）")
     return [
         PrivacyResult(
             doc_id=doc.doc_id,
@@ -364,6 +381,10 @@ def _fallback_scan(documents: list[DedupDocument]) -> list[PrivacyResult]:
             redacted_text=doc.text,
             pii_entities=[],
             pii_count=0,
+            original_text_preserved=True,
+            provider_name="fallback_passthrough",
+            provider_version="",
+            is_degraded=True,
         )
         for doc in documents
         if not doc.is_duplicate
@@ -424,6 +445,10 @@ def run(
                 redacted_text=redacted_text,
                 pii_entities=pii_entities,
                 pii_count=len(pii_entities),
+                original_text_preserved=True,
+                provider_name="presidio",
+                provider_version="latest",
+                is_degraded=False,
             )
         )
 

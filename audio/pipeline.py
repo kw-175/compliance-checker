@@ -1,4 +1,4 @@
-﻿"""
+"""
 Pipeline orchestrator for audio compliance checking.
 """
 
@@ -12,6 +12,11 @@ from typing import Any
 
 from audio.config.settings import Settings, get_settings
 from audio.models.schemas import EvidenceBundle, PolicyDecision, ReleasePackage
+
+# 统一契约层导入
+from common.contracts import ComplianceOutput
+from common.enums import Modality, TrustLevel, UnifiedDecision
+from common.runtime import PipelineExecutionContext, TrustEvaluator
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +50,8 @@ class AudioCompliancePipeline:
         self.output_dir = self.settings.work_dir / self.run_id
         # 延迟初始化 lineage tracker，未使用时不额外开销。
         self._tracker = None
+        # 统一执行上下文（记录步骤状态、降级事件、失败信息）
+        self.exec_ctx = PipelineExecutionContext(pipeline_run_id=self.run_id)
 
     @property
     def tracker(self):
@@ -55,13 +62,16 @@ class AudioCompliancePipeline:
         return self._tracker
 
     def _run_step(self, step_name: str, func, *args, output_file: str | None = None, **kwargs):
-        # 所有步骤统一经过该包装器，确保开始/成功/失败都进入审计轨迹。
+        # 所有步骤统一经过该包装器，确保开始/成功/失败都进入审计轨迹和执行上下文。
+        self.exec_ctx.record_step_start(step_name)
         run_id = self.tracker.start_step(step_name, outputs=[{"name": output_file}] if output_file else None)
         try:
             result = func(*args, **kwargs)
+            self.exec_ctx.record_step_complete(step_name)
             self.tracker.complete_step(step_name, run_id, outputs=[{"name": output_file}] if output_file else None)
             return result
         except Exception as exc:
+            self.exec_ctx.record_step_failure(step_name, error=str(exc))
             self.tracker.fail_step(step_name, run_id, str(exc))
             raise
 
@@ -95,8 +105,8 @@ class AudioCompliancePipeline:
         sources = self._run_step("step_a_source_intake", a_source_intake.run, input_paths, output_file="source_registry.jsonl")
         _write_jsonl(sources, self.output_dir / "source_registry.jsonl")
         if not sources:
-            # 无可处理输入时返回默认决策，避免后续空跑。
-            return PolicyDecision(pipeline_run_id=self.run_id)
+            # 无可处理输入时返回默认空输出。
+            return self._build_empty_output()
 
         # B1: 识别输入类型（音频/仓库/压缩包等）。
         profiles = self._run_step("step_b1_source_classify", b1_source_classify.run, sources, output_file="source_profile.jsonl")
@@ -124,7 +134,7 @@ class AudioCompliancePipeline:
         normalized = self._run_step("step_c0_audio_normalize", c0_audio_normalize.run, profiles, self.settings, self.output_dir, output_file="normalized_audio_manifest.jsonl")
         _write_jsonl(normalized, self.output_dir / "normalized_audio_manifest.jsonl")
         if not normalized:
-            return PolicyDecision(pipeline_run_id=self.run_id)
+            return self._build_empty_output()
 
         # C1: 语音转写；C1b: 说话人分离；C1c: 对齐占位。
         asr_segments = self._run_step("step_c1_asr_transcribe", c1_asr_transcribe.run, normalized, self.settings, output_file="asr_segments.jsonl")
@@ -208,5 +218,101 @@ class AudioCompliancePipeline:
         _write_json(release_package, self.output_dir / "release_package.json")
 
         logger.info("Audio pipeline run %s completed with decision=%s", self.run_id[:8], decision.overall_decision.value)
-        return decision
 
+        # ── 步骤 M: 统一契约输出构建 ────────────────
+        compliance_output = self._build_compliance_output(
+            evidence_bundle, decision, redaction_spans, normalized,
+        )
+        _write_json(compliance_output, self.output_dir / "compliance_output.json")
+        return compliance_output
+
+    def _build_empty_output(self) -> ComplianceOutput:
+        """构建无内容的输出（无来源或无音频时使用）。"""
+        from common.adapters import build_compliance_output
+        return build_compliance_output(
+            pipeline_run_id=self.run_id,
+            modality=Modality.AUDIO,
+            decision=UnifiedDecision.REVIEW,
+            trust_level=TrustLevel.FULL,
+            release_package=None,
+        )
+
+    def _build_compliance_output(
+        self,
+        evidence_bundle: EvidenceBundle,
+        decision: PolicyDecision,
+        redaction_spans: list,
+        normalized: list,
+    ) -> ComplianceOutput:
+        """从旧模型构建统一输出契约。"""
+        from common.adapters import (
+            audio_redaction_span_to_evidence,
+            build_annotation_package,
+            build_audit_package,
+            build_compliance_output,
+            build_release_package,
+            deduplicate_evidence_units,
+            map_text_decision_to_unified,
+        )
+        from common.policy import evaluate_with_profile, load_policy_profile
+
+        # 1. 转换证据
+        all_units = []
+        for span in redaction_spans:
+            all_units.append(audio_redaction_span_to_evidence(span))
+        all_units = deduplicate_evidence_units(all_units)
+
+        # 2. Profile 化策略评伋
+        profile = load_policy_profile("default")
+        policy_result = evaluate_with_profile(
+            all_units, profile=profile,
+            degrade_events=self.exec_ctx.degrade_events,
+        )
+
+        trust_level = TrustEvaluator.evaluate(self.exec_ctx)
+        unified_decision = policy_result.decision
+
+        # 3. 标注样本包
+        content_uri = str(self.output_dir / "normalized_audio_manifest.jsonl")
+        annotation_pkg = build_annotation_package(
+            modality=Modality.AUDIO,
+            pipeline_run_id=self.run_id,
+            clean_content_uri=content_uri,
+            content_format="audio/wav",
+            evidence_units=all_units,
+            decision=unified_decision,
+            trust_level=trust_level,
+        )
+
+        # 4. 审计证据包
+        audit_pkg = build_audit_package(
+            modality=Modality.AUDIO,
+            pipeline_run_id=self.run_id,
+            evidence_units=all_units,
+            degrade_events=self.exec_ctx.degrade_events,
+            policy_result=policy_result,
+            ctx=self.exec_ctx,
+        )
+
+        # 5. 组装发布包
+        release_pkg = build_release_package(
+            modality=Modality.AUDIO,
+            pipeline_run_id=self.run_id,
+            annotation_package=annotation_pkg,
+            audit_package=audit_pkg,
+            decision=unified_decision,
+            trust_level=trust_level,
+        )
+
+        legacy = decision.model_dump() if decision else None
+        return build_compliance_output(
+            pipeline_run_id=self.run_id,
+            modality=Modality.AUDIO,
+            decision=unified_decision,
+            trust_level=trust_level,
+            release_package=release_pkg,
+            degrade_summary=policy_result.degrade_summary,
+            review_suggestions=policy_result.review_suggestions,
+            explanation_summary=audit_pkg.review_summary,
+            legacy_decision=legacy,
+        )

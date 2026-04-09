@@ -55,6 +55,11 @@ from picture.providers.base import (
     VisionDetector,
 )
 
+# 统一契约层导入
+from common.contracts import ComplianceOutput
+from common.enums import Modality, TrustLevel, UnifiedDecision
+from common.runtime import PipelineExecutionContext, TrustEvaluator
+
 logger = logging.getLogger(__name__)
 
 # 中文说明：这里集中声明 picture 模块当前接受的输入 MIME 类型。
@@ -111,6 +116,8 @@ class PictureComplianceOrchestrator:
         self._storage = storage
         self._repo = repository
         self._settings = settings
+        # 统一执行上下文（记录步骤状态、降级事件、失败信息）
+        self.exec_ctx: PipelineExecutionContext | None = None
 
     def execute(self, job: PictureJob) -> PictureJob:
         """
@@ -126,6 +133,8 @@ class PictureComplianceOrchestrator:
         """
         # 中文说明：total_start 记录整个任务的端到端耗时，用于最终审计与性能分析。
         total_start = time.monotonic()
+        # 初始化执行上下文
+        self.exec_ctx = PipelineExecutionContext(pipeline_run_id=job.job_id)
         try:
             # 中文说明：任务一开始先进入预处理状态，便于前端或 API 查询当前进度。
             self._update_status(job, JobStatus.PREPROCESSING)
@@ -192,6 +201,10 @@ class PictureComplianceOrchestrator:
             # 中文说明：报告生成放在末尾，确保其中的 findings、策略结果、
             # provider 版本、耗时等字段都已经完整填充。
             self._generate_report(job, work_dir)
+
+            # 中文说明：构建统一契约输出（双轨交付物）。
+            compliance_output = self._build_compliance_output(job)
+            job._compliance_output = compliance_output
 
             # 中文说明：最后再次持久化一次完整任务快照，确保仓储中的状态与报告一致。
             self._repo.save_job(job)
@@ -635,3 +648,80 @@ class PictureComplianceOrchestrator:
             str(report_path), f"{job.job_id}/report.json"
         )
         logger.info("Report saved to %s", job.report_uri)
+
+    def _build_compliance_output(self, job: PictureJob) -> ComplianceOutput:
+        """构建统一契约输出（双轨交付物）。"""
+        from common.adapters import (
+            build_annotation_package,
+            build_audit_package,
+            build_compliance_output,
+            build_release_package,
+            deduplicate_evidence_units,
+            map_picture_decision_to_unified,
+            picture_finding_to_evidence,
+        )
+        from common.policy import evaluate_with_profile, load_policy_profile
+
+        # 1. 转换 PictureFinding → EvidenceUnit
+        evidence_units = [picture_finding_to_evidence(f) for f in job.findings]
+        evidence_units = deduplicate_evidence_units(evidence_units)
+
+        # 2. Profile 化策略评估
+        ctx = self.exec_ctx or PipelineExecutionContext(pipeline_run_id=job.job_id)
+        profile = load_policy_profile("default")
+        policy_result = evaluate_with_profile(
+            evidence_units, profile=profile,
+            degrade_events=ctx.degrade_events,
+        )
+        trust_level = TrustEvaluator.evaluate(ctx)
+        unified_decision = policy_result.decision
+
+        # 3. 标注样本包
+        content_uri = job.compliant_image_uri or job.asset.original_uri if job.asset else ""
+        annotation_pkg = build_annotation_package(
+            modality=Modality.PICTURE,
+            pipeline_run_id=job.job_id,
+            clean_content_uri=content_uri,
+            content_format=job.source.mime_type if job.source else "image/png",
+            evidence_units=evidence_units,
+            decision=unified_decision,
+            trust_level=trust_level,
+        )
+
+        # 4. 审计证据包
+        audit_pkg = build_audit_package(
+            modality=Modality.PICTURE,
+            pipeline_run_id=job.job_id,
+            evidence_units=evidence_units,
+            degrade_events=ctx.degrade_events,
+            policy_result=policy_result,
+            ctx=ctx,
+        )
+
+        # 5. 组装发布包
+        release_pkg = build_release_package(
+            modality=Modality.PICTURE,
+            pipeline_run_id=job.job_id,
+            annotation_package=annotation_pkg,
+            audit_package=audit_pkg,
+            decision=unified_decision,
+            trust_level=trust_level,
+        )
+
+        # 6. 填充双轨交付物 URI 到 job
+        job.annotation_package_uri = content_uri
+        job.audit_package_uri = job.report_uri
+        job.trust_level = trust_level.value
+
+        legacy = job.policy_result.model_dump() if job.policy_result else None
+        return build_compliance_output(
+            pipeline_run_id=job.job_id,
+            modality=Modality.PICTURE,
+            decision=unified_decision,
+            trust_level=trust_level,
+            release_package=release_pkg,
+            degrade_summary=policy_result.degrade_summary,
+            review_suggestions=policy_result.review_suggestions,
+            explanation_summary=audit_pkg.review_summary,
+            legacy_decision=legacy,
+        )
