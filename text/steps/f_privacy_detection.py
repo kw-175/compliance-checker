@@ -1,466 +1,344 @@
-# ──────────────────────────────────────────────────────────────
-# 步骤 F – 隐私检测与脱敏 (Privacy Detection & Redaction)
-# ──────────────────────────────────────────────────────────────
-#
-# 功能：
-#   使用 Microsoft Presidio 检测文本中的 PII（个人身份信息），
-#   并对检测到的 PII 进行脱敏处理（替换为占位符）。
-#
-# 支持的 PII 类型：
-#   PERSON, LOCATION, ORGANIZATION, EMAIL_ADDRESS, PHONE_NUMBER,
-#   CREDIT_CARD, ID, DATE_TIME 等
-#
-# 增强识别：
-#   可选加载 HuggingFace NER 模型（如 Meddies/meddies-pii）
-#   作为 Presidio 的额外识别器，提高检测准确率。
-#
-# Fallback 策略：
-#   - Presidio 未安装 → 透传原文（不做任何脱敏）
-#   - HuggingFace 模型加载失败 → 仅使用 Presidio 内置识别器
-#
-# 脱敏替换规则：
-#   DEFAULT → <REDACTED>
-#   PHONE_NUMBER → <PHONE>
-#   EMAIL_ADDRESS → <EMAIL>
-#   CREDIT_CARD → <CREDIT_CARD>
-#   PERSON → <PERSON>
-#
-# 在流水线中的位置：
-#   D(去重) → F(本步骤) → G(安全审核)
-#
-# 输出产物：
-#   privacy_checked.jsonl
-# ──────────────────────────────────────────────────────────────
-
-"""
-步骤 F – 隐私检测与脱敏。
-
-使用 Microsoft Presidio 进行 PII 检测和脱敏。
-可选加载 HuggingFace NER 模型作为增强识别器。
-
-输出 → privacy_checked.jsonl
-"""
-
 from __future__ import annotations
 
 import logging
-from typing import Optional
+import re
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
 
-from text.config.settings import Settings
-from text.models.schemas import DedupDocument, PIIEntity, PrivacyResult
+import yaml
+
+from text.config.settings import Settings, get_settings
+from text.models.schemas import (
+    DetectionFinding,
+    IngestUnit,
+    PrivacyDetectionResult,
+    Severity,
+    TextSpan,
+)
 
 logger = logging.getLogger(__name__)
 
-# 模块级单例（延迟加载，避免每次调用都初始化）
-_analyzer = None
-_anonymizer = None
+SEVERITY_WEIGHTS = {
+    Severity.LOW: 0.30,
+    Severity.MEDIUM: 0.55,
+    Severity.HIGH: 0.80,
+    Severity.CRITICAL: 1.00,
+}
+REGEX_FLAGS = {
+    "IGNORECASE": re.IGNORECASE,
+    "MULTILINE": re.MULTILINE,
+}
 
 
-def _get_analyzer(settings: Settings):
-    """
-    延迟初始化 Presidio AnalyzerEngine。
+@lru_cache(maxsize=4)
+def _load_rules(path: str) -> dict:
+    with Path(path).open("r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
 
-    首次调用时：
-    1. 配置 spaCy NLP 引擎（加载 en_core_web_sm 模型）
-    2. 创建 AnalyzerEngine 实例
-    3. 可选注册 HuggingFace Transformers NER 识别器
 
-    后续调用直接返回缓存的实例。
+def _resolve_flags(flag_names: list[str]) -> int:
+    value = 0
+    for name in flag_names:
+        value |= REGEX_FLAGS.get(name, 0)
+    return value
 
-    Args:
-        settings: 配置对象（包含语言、模型名称等）
 
-    Returns:
-        初始化完成的 AnalyzerEngine 实例
-    """
-    global _analyzer
-    if _analyzer is not None:
-        return _analyzer
+def _context(text: str, start: int, end: int, window: int = 40) -> tuple[str, str]:
+    before = text[max(0, start - window):start]
+    after = text[end:min(len(text), end + window)]
+    return before, after
 
-    from presidio_analyzer import AnalyzerEngine
-    from presidio_analyzer.nlp_engine import NlpEngineProvider
 
-    # 配置 spaCy NLP 引擎
-    # 注意：目前仅支持英文 (en_core_web_sm)
-    # 中文 PII 检测依赖 Presidio 内置的正则识别器或自定义 NER
-    nlp_config = {
-        "nlp_engine_name": "spacy",
-        "models": [
-            {"lang_code": "en", "model_name": "en_core_web_sm"},
-        ],
-    }
+def _build_finding(
+    unit: IngestUnit,
+    *,
+    policy_tag: str,
+    risk_type: str,
+    severity: Severity,
+    replacement: str,
+    match_text: str,
+    start: int,
+    end: int,
+    source_tool: str,
+    needs_adjudication: bool,
+    hard_case_reason: str,
+    confidence_override: float | None = None,
+    explanation: str | None = None,
+    attributes: dict[str, Any] | None = None,
+) -> DetectionFinding:
+    before, after = _context(unit.text, start, end)
+    confidence = confidence_override if confidence_override is not None else min(0.99, SEVERITY_WEIGHTS[severity] + 0.08)
+    if needs_adjudication:
+        confidence = max(0.4, confidence - 0.22)
 
-    provider = NlpEngineProvider(nlp_configuration=nlp_config)
-    nlp_engine = provider.create_engine()
-
-    _analyzer = AnalyzerEngine(
-        nlp_engine=nlp_engine,
-        supported_languages=settings.presidio_languages,
+    return DetectionFinding(
+        doc_id=unit.doc_id,
+        finding_type="privacy",
+        risk_type=risk_type,
+        policy_tag=policy_tag,
+        severity=severity,
+        confidence=round(confidence, 4),
+        explanation=explanation or f"Matched privacy pattern for {risk_type}.",
+        source_tool=source_tool,
+        remediation_suggestion="redact" if replacement else "manual_review",
+        redaction_suggestion=replacement,
+        needs_adjudication=needs_adjudication,
+        hard_case_reason=hard_case_reason,
+        span=TextSpan(
+            start=start,
+            end=end,
+            text=match_text,
+            context_before=before,
+            context_after=after,
+        ),
+        attributes=attributes or {},
     )
 
-    # 可选：加载 HuggingFace Transformers NER 模型作为增强识别器
-    if settings.pii_model_name:
-        try:
-            _register_transformers_recognizer(_analyzer, settings)
-        except Exception as e:
-            logger.warning(
-                "加载自定义 PII 模型 '%s' 失败: %s。"
-                "将仅使用 Presidio 内置识别器。",
-                settings.pii_model_name, e,
-            )
 
-    logger.info("Presidio AnalyzerEngine 初始化完成")
-    return _analyzer
-
-
-def _register_transformers_recognizer(analyzer, settings: Settings):
-    """
-    注册 HuggingFace NER 模型作为 Presidio 识别器。
-
-    优先使用 Presidio 内置的 TransformersRecognizer；
-    若不可用则手动包装 HuggingFace pipeline。
-
-    Args:
-        analyzer: Presidio AnalyzerEngine 实例
-        settings: 配置对象
-    """
-    try:
-        from presidio_analyzer.predefined_recognizers import TransformersRecognizer
-
-        # 使用 Presidio 内置的 Transformers 识别器适配器
-        transformers_recognizer = TransformersRecognizer(
-            model_path=settings.pii_model_name,
-            supported_entities=[
-                "PERSON", "LOCATION", "ORGANIZATION",
-                "EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD",
-                "ID", "DATE_TIME",
-            ],
-            supported_language="en",
-        )
-        analyzer.registry.add_recognizer(transformers_recognizer)
-        logger.info(
-            "已注册 TransformersRecognizer，模型: %s",
-            settings.pii_model_name,
-        )
-    except (ImportError, Exception) as e:
-        logger.info(
-            "TransformersRecognizer 不可用 (%s)，尝试手动注册 NER 包装器", e
-        )
-        _register_manual_ner(analyzer, settings)
+PRESIDIO_ENTITY_MAP = {
+    "EMAIL_ADDRESS": ("email", "pii.email", Severity.LOW, "<EMAIL>"),
+    "PHONE_NUMBER": ("phone", "pii.phone", Severity.MEDIUM, "<PHONE>"),
+    "PERSON": ("person_name", "pii.person_name", Severity.LOW, "<PERSON>"),
+    "LOCATION": ("address", "pii.address", Severity.MEDIUM, "<ADDRESS>"),
+    "CREDIT_CARD": ("bank_card", "pii.bank_card", Severity.HIGH, "<BANK_CARD>"),
+    "CRYPTO": ("crypto_wallet", "pii.crypto_wallet", Severity.HIGH, "<CRYPTO_WALLET>"),
+    "IBAN_CODE": ("bank_account", "pii.bank_account", Severity.HIGH, "<BANK_ACCOUNT>"),
+    "IP_ADDRESS": ("ip_address", "pii.ip_address", Severity.LOW, "<IP_ADDRESS>"),
+    "URL": ("url", "pii.url", Severity.LOW, "<URL>"),
+    "US_SSN": ("id_card", "pii.id_card", Severity.HIGH, "<ID_CARD>"),
+    "US_DRIVER_LICENSE": ("id_card", "pii.id_card", Severity.HIGH, "<ID_CARD>"),
+    "US_PASSPORT": ("id_card", "pii.id_card", Severity.HIGH, "<ID_CARD>"),
+    "CN_ID_CARD": ("id_card", "pii.id_card", Severity.HIGH, "<ID_CARD>"),
+    "CN_PHONE_NUMBER": ("phone", "pii.phone", Severity.MEDIUM, "<PHONE>"),
+    "STUDENT_ID": ("student_id", "pii.student_id", Severity.MEDIUM, "<STUDENT_ID>"),
+}
 
 
-def _register_manual_ner(analyzer, settings: Settings):
-    """
-    手动包装 HuggingFace NER pipeline 为 Presidio 识别器。
-
-    当 Presidio 内置的 TransformersRecognizer 不可用时，
-    手动创建一个 EntityRecognizer 子类来桥接二者。
-
-    Args:
-        analyzer: Presidio AnalyzerEngine 实例
-        settings: 配置对象
-    """
-    from presidio_analyzer import EntityRecognizer, RecognizerResult
-
-    class HFNerRecognizer(EntityRecognizer):
-        """基于 HuggingFace NER pipeline 的 Presidio 识别器包装类。"""
-
-        def __init__(self, model_name: str):
-            super().__init__(
-                supported_entities=["PERSON", "LOCATION", "ORGANIZATION"],
-                supported_language="en",
-                name="HFNerRecognizer",
-            )
-            # 加载 HuggingFace NER pipeline
-            from transformers import pipeline
-            self.ner_pipeline = pipeline(
-                "ner",
-                model=model_name,
-                aggregation_strategy="simple",  # 合并相邻同类实体
-            )
-
-        def load(self):
-            """Presidio 要求的加载方法（模型已在 __init__ 中加载）。"""
-            pass
-
-        def analyze(self, text: str, entities, nlp_artifacts=None):
-            """
-            使用 HuggingFace NER 分析文本中的实体。
-
-            Args:
-                text: 待分析文本
-                entities: 需要检测的实体类型列表
-                nlp_artifacts: Presidio NLP 分析结果（本识别器不使用）
-
-            Returns:
-                RecognizerResult 列表
-            """
-            results = []
-            # 截断文本到 5000 字符以避免 OOM
-            ner_results = self.ner_pipeline(text[:5000])
-
-            for ent in ner_results:
-                # 将 HuggingFace 的实体标签映射到 Presidio 的实体类型
-                entity_type = ent["entity_group"].upper()
-                if entity_type in {"PER", "PERSON"}:
-                    entity_type = "PERSON"
-                elif entity_type in {"LOC", "LOCATION", "GPE"}:
-                    entity_type = "LOCATION"
-                elif entity_type in {"ORG", "ORGANIZATION"}:
-                    entity_type = "ORGANIZATION"
-                else:
-                    continue  # 跳过未映射的实体类型
-
-                # 如果指定了实体类型过滤，则只返回匹配的类型
-                if entities and entity_type not in entities:
-                    continue
-
-                results.append(
-                    RecognizerResult(
-                        entity_type=entity_type,
-                        start=ent["start"],
-                        end=ent["end"],
-                        score=float(ent["score"]),
-                    )
-                )
-            return results
+def _call_presidio_analyzer(unit: IngestUnit, settings: Settings) -> tuple[list[dict[str, Any]], str]:
+    if not settings.enable_presidio or not settings.presidio_analyzer_endpoint:
+        return [], ""
 
     try:
-        recognizer = HFNerRecognizer(settings.pii_model_name)
-        analyzer.registry.add_recognizer(recognizer)
-        logger.info("已注册手动 HF NER 识别器: %s", settings.pii_model_name)
-    except Exception as e:
-        logger.warning("注册 HF NER 识别器失败: %s", e)
+        import httpx
 
-
-def _get_anonymizer():
-    """
-    延迟初始化 Presidio AnonymizerEngine。
-
-    AnonymizerEngine 负责对检测到的 PII 实体进行脱敏替换。
-
-    Returns:
-        初始化完成的 AnonymizerEngine 实例
-    """
-    global _anonymizer
-    if _anonymizer is not None:
-        return _anonymizer
-    from presidio_anonymizer import AnonymizerEngine
-    _anonymizer = AnonymizerEngine()
-    return _anonymizer
-
-
-def _analyze_and_redact(
-    text: str,
-    analyzer,
-    anonymizer,
-    languages: list[str],
-    score_threshold: float,
-) -> tuple[str, list[PIIEntity]]:
-    """
-    对单段文本执行 PII 检测 + 脱敏。
-
-    处理步骤：
-    1. 对每种语言分别运行 Presidio 分析器
-    2. 合并结果并去除重叠（保留高分结果）
-    3. 使用匿名器替换检测到的 PII
-
-    Args:
-        text: 待处理文本
-        analyzer: Presidio AnalyzerEngine
-        anonymizer: Presidio AnonymizerEngine
-        languages: 分析使用的语言列表
-        score_threshold: 最低置信度阈值
-
-    Returns:
-        (脱敏后文本, PIIEntity 列表)
-    """
-    from presidio_anonymizer.entities import OperatorConfig
-
-    # 第 1 步：多语言分析
-    all_results = []
-    for lang in languages:
-        try:
-            results = analyzer.analyze(
-                text=text,
-                language=lang,
-                score_threshold=score_threshold,
-            )
-            all_results.extend(results)
-        except Exception as e:
-            # 某种语言分析失败不影响其他语言
-            logger.debug("语言 %s 分析失败: %s", lang, e)
-
-    # 第 2 步：去重——按分数降序排列，移除重叠区间
-    # 当两个检测结果在文本中重叠时，保留置信度更高的
-    all_results.sort(key=lambda r: (-r.score, r.start))
-    deduped = []
-    used_ranges: list[tuple[int, int]] = []
-    for r in all_results:
-        overlap = False
-        for start, end in used_ranges:
-            # 检查是否与已保留的结果重叠
-            if r.start < end and r.end > start:
-                overlap = True
-                break
-        if not overlap:
-            deduped.append(r)
-            used_ranges.append((r.start, r.end))
-
-    # 第 3 步：脱敏——将 PII 实体替换为占位符
-    if deduped:
-        anonymized = anonymizer.anonymize(
-            text=text,
-            analyzer_results=deduped,
-            operators={
-                "DEFAULT": OperatorConfig("replace", {"new_value": "<REDACTED>"}),
-                "PHONE_NUMBER": OperatorConfig("replace", {"new_value": "<PHONE>"}),
-                "EMAIL_ADDRESS": OperatorConfig("replace", {"new_value": "<EMAIL>"}),
-                "CREDIT_CARD": OperatorConfig("replace", {"new_value": "<CREDIT_CARD>"}),
-                "PERSON": OperatorConfig("replace", {"new_value": "<PERSON>"}),
+        language = _presidio_language_for(unit, settings)
+        response = httpx.post(
+            settings.presidio_analyzer_endpoint,
+            json={
+                "text": unit.text,
+                "language": language,
+                "score_threshold": settings.presidio_score_threshold,
             },
+            timeout=settings.presidio_timeout_seconds,
         )
-        redacted_text = anonymized.text
-    else:
-        redacted_text = text
-
-    # 构建 PIIEntity 列表（填充上下文和替换建议）
-    pii_entities = []
-    for r in deduped:
-        original = text[r.start : r.end][:100]
-        # 提取前后上下文（各 50 字符），便于人工复核
-        ctx_before = text[max(0, r.start - 50) : r.start]
-        ctx_after = text[r.end : r.end + 50]
-        # 替换建议（非侵入式）：不直接替换原文，由下游决定是否应用
-        replacement_map = {
-            "PHONE_NUMBER": "<PHONE>",
-            "EMAIL_ADDRESS": "<EMAIL>",
-            "CREDIT_CARD": "<CREDIT_CARD>",
-            "PERSON": "<PERSON>",
-            "LOCATION": "<LOCATION>",
-            "ORGANIZATION": "<ORG>",
-        }
-        suggestion = replacement_map.get(r.entity_type, "<REDACTED>")
-        pii_entities.append(PIIEntity(
-            entity_type=r.entity_type,
-            start=r.start,
-            end=r.end,
-            score=round(r.score, 4),
-            original_text=original,
-            replacement_suggestion=suggestion,
-            context_before=ctx_before,
-            context_after=ctx_after,
-        ))
-
-    return redacted_text, pii_entities
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)], ""
+        if isinstance(payload, dict) and isinstance(payload.get("results"), list):
+            return [item for item in payload["results"] if isinstance(item, dict)], ""
+        return [], "presidio_unexpected_response"
+    except Exception as exc:
+        logger.warning("Presidio analyzer failed for %s: %s", unit.doc_id, exc)
+        return [], "presidio_service_unavailable"
 
 
-# ────────────────────────────────────────────────────────────
-# Fallback：Presidio 不可用时的降级方案
-# ────────────────────────────────────────────────────────────
+def _presidio_language_for(unit: IngestUnit, settings: Settings) -> str:
+    configured = settings.presidio_language.strip().lower()
+    supported = {
+        item.strip().lower()
+        for item in settings.presidio_supported_languages.split(",")
+        if item.strip()
+    }
+    fallback = settings.presidio_language_fallback.strip().lower() or "en"
 
-def _fallback_scan(documents: list[DedupDocument]) -> list[PrivacyResult]:
-    """
-    Presidio 不可用时的简单透传 fallback。
+    if configured and configured != "auto":
+        return configured if configured in supported else fallback
 
-    不进行任何 PII 检测或脱敏，直接将原始文本作为输出。
-    标记 is_degraded=True，供下游生成 DegradeEvent。
-    仅用于开发/测试环境。
-
-    Args:
-        documents: 去重后的文档列表
-
-    Returns:
-        PrivacyResult 列表（redacted_text = original_text, is_degraded=True）
-    """
-    logger.warning("Presidio 不可用 – 文档将原样透传，不进行 PII 脱敏（已标记 is_degraded）")
-    return [
-        PrivacyResult(
-            doc_id=doc.doc_id,
-            original_text=doc.text,
-            redacted_text=doc.text,
-            pii_entities=[],
-            pii_count=0,
-            original_text_preserved=True,
-            provider_name="fallback_passthrough",
-            provider_version="",
-            is_degraded=True,
-        )
-        for doc in documents
-        if not doc.is_duplicate
-    ]
+    inferred = (unit.language or "").strip().lower()
+    return inferred if inferred in supported else fallback
 
 
-# ────────────────────────────────────────────────────────────
-# 公共 API
-# ────────────────────────────────────────────────────────────
+def _presidio_finding(unit: IngestUnit, item: dict[str, Any], settings: Settings) -> DetectionFinding | None:
+    entity_type = str(item.get("entity_type") or item.get("type") or "").upper()
+    start = item.get("start")
+    end = item.get("end")
+    score = item.get("score", 0.0)
+    try:
+        start_i = int(start)
+        end_i = int(end)
+        score_f = float(score)
+    except (TypeError, ValueError):
+        return None
+    if start_i < 0 or end_i <= start_i or end_i > len(unit.text):
+        return None
+    if score_f < settings.presidio_score_threshold:
+        return None
+
+    risk_type, policy_tag, severity, replacement = PRESIDIO_ENTITY_MAP.get(
+        entity_type,
+        ("pii_entity", f"pii.presidio.{entity_type.lower() or 'unknown'}", Severity.MEDIUM, "<PII>"),
+    )
+    needs_adjudication = risk_type in {"person_name", "address", "bank_card", "id_card"}
+    hard_case_reason = "context_dependent_pii" if needs_adjudication else ""
+    return _build_finding(
+        unit,
+        policy_tag=policy_tag,
+        risk_type=risk_type,
+        severity=severity,
+        replacement=replacement,
+        match_text=unit.text[start_i:end_i],
+        start=start_i,
+        end=end_i,
+        source_tool="presidio_analyzer",
+        needs_adjudication=needs_adjudication,
+        hard_case_reason=hard_case_reason,
+        confidence_override=score_f,
+        explanation=f"Presidio detected {entity_type or 'PII'} with score {score_f:.3f}.",
+        attributes={"presidio_entity_type": entity_type, "presidio_result": item},
+    )
+
+
+def _deduplicate(findings: list[DetectionFinding]) -> list[DetectionFinding]:
+    deduped: dict[tuple[int, int, str], DetectionFinding] = {}
+    for finding in findings:
+        if finding.span is None:
+            continue
+        key = (finding.span.start, finding.span.end, finding.policy_tag)
+        existing = deduped.get(key)
+        if existing is None or finding.confidence > existing.confidence:
+            deduped[key] = finding
+    return list(deduped.values())
+
 
 def run(
-    documents: list[DedupDocument],
+    ingest_units: list[IngestUnit],
     settings: Settings | None = None,
-) -> list[PrivacyResult]:
-    """
-    执行隐私检测与脱敏。
+) -> list[PrivacyDetectionResult]:
+    settings = settings or get_settings()
+    rules = _load_rules(str(settings.pii_rules_path))
+    pattern_rules = rules.get("patterns", {})
+    combination_rules = rules.get("combination_rules", {})
 
-    对每个非重复文档执行 Presidio PII 检测，并将检测到的
-    敏感信息替换为占位符。
+    results: list[PrivacyDetectionResult] = []
+    for unit in ingest_units:
+        findings: list[DetectionFinding] = []
+        hard_case_reasons: list[str] = []
+        distinct_types: set[str] = set()
+        provider_name = "rule_pii_detector"
+        is_degraded = False
 
-    Args:
-        documents: 去重后的文档列表（步骤 D 输出）
-        settings: 配置对象（可选）
+        presidio_items, presidio_error = _call_presidio_analyzer(unit, settings)
+        if presidio_error:
+            is_degraded = True
+            hard_case_reasons.append(presidio_error)
+        if presidio_items:
+            provider_name = "presidio+rule_pii_detector"
+            for item in presidio_items:
+                finding = _presidio_finding(unit, item, settings)
+                if finding is None:
+                    continue
+                findings.append(finding)
+                distinct_types.add(finding.risk_type)
+                if finding.needs_adjudication and finding.hard_case_reason:
+                    hard_case_reasons.append(finding.hard_case_reason)
 
-    Returns:
-        PrivacyResult 列表，包含原始文本和脱敏后文本
-    """
-    if settings is None:
-        from text.config.settings import get_settings
-        settings = get_settings()
+        for rule_name, rule in pattern_rules.items():
+            pattern = str(rule["regex"])
+            flags = _resolve_flags(list(rule.get("flags", [])))
+            compiled = re.compile(pattern, flags)
+            capture_group = int(rule.get("capture_group", 0))
+            severity = Severity(rule["severity"])
+            policy_tag = str(rule["policy_tag"])
+            risk_type = str(rule["risk_type"])
+            replacement = str(rule.get("redaction", ""))
 
-    # 尝试初始化 Presidio，失败则使用 fallback
-    try:
-        analyzer = _get_analyzer(settings)
-        anonymizer = _get_anonymizer()
-    except ImportError:
-        return _fallback_scan(documents)
+            for match in compiled.finditer(unit.text):
+                start, end = match.span(capture_group)
+                match_text = match.group(capture_group)
+                needs_adjudication = risk_type in {"person_name", "education_record", "bank_card"}
+                hard_case_reason = "context_dependent_pii" if needs_adjudication else ""
+                if needs_adjudication and "context_dependent_pii" not in hard_case_reasons:
+                    hard_case_reasons.append("context_dependent_pii")
 
-    results: list[PrivacyResult] = []
-    for doc in documents:
-        # 跳过重复文档
-        if doc.is_duplicate:
-            continue
+                findings.append(
+                    _build_finding(
+                        unit,
+                        policy_tag=policy_tag,
+                        risk_type=risk_type,
+                        severity=severity,
+                        replacement=replacement,
+                        match_text=match_text,
+                        start=start,
+                        end=end,
+                        source_tool=f"privacy_rule_engine.{rule_name}",
+                        needs_adjudication=needs_adjudication,
+                        hard_case_reason=hard_case_reason,
+                    )
+                )
+                distinct_types.add(risk_type)
 
-        # 执行检测 + 脱敏
-        redacted_text, pii_entities = _analyze_and_redact(
-            doc.text,
-            analyzer,
-            anonymizer,
-            settings.presidio_languages,
-            settings.pii_score_threshold,
+        findings = _deduplicate(findings)
+
+        combined_rule = combination_rules.get("combined_identity")
+        if combined_rule:
+            base_types = set(combined_rule.get("base_types", []))
+            matched_base_types = {finding.risk_type for finding in findings if finding.risk_type in base_types}
+            if len(matched_base_types) >= settings.privacy_combination_threshold:
+                severity = Severity(combined_rule["severity"])
+                needs_adjudication = True
+                hard_case_reasons.append("combined_identity")
+                findings.append(
+                    DetectionFinding(
+                        doc_id=unit.doc_id,
+                        finding_type="privacy",
+                        risk_type=str(combined_rule["risk_type"]),
+                        policy_tag=str(combined_rule["policy_tag"]),
+                        severity=severity,
+                        confidence=0.92,
+                        explanation=(
+                            f"Detected {len(matched_base_types)} distinct identity attributes "
+                            "that can combine into a stronger personal profile."
+                        ),
+                        source_tool="privacy_rule_engine.combined_identity",
+                        remediation_suggestion="restrict_and_review",
+                        redaction_suggestion=str(combined_rule.get("redaction", "")),
+                        needs_adjudication=needs_adjudication,
+                        hard_case_reason="combined_identity",
+                        span=None,
+                        attributes={"matched_types": sorted(matched_base_types)},
+                    )
+                )
+
+        risk_score = max(
+            (SEVERITY_WEIGHTS[finding.severity] * finding.confidence for finding in findings),
+            default=0.0,
         )
+        needs_adjudication = any(finding.needs_adjudication for finding in findings)
+        if needs_adjudication and "manual_resolution_needed" not in hard_case_reasons:
+            hard_case_reasons.append("manual_resolution_needed")
+
+        summary = "No privacy risks detected."
+        if findings:
+            summary = f"Detected {len(findings)} privacy findings."
 
         results.append(
-            PrivacyResult(
-                doc_id=doc.doc_id,
-                original_text=doc.text,
-                redacted_text=redacted_text,
-                pii_entities=pii_entities,
-                pii_count=len(pii_entities),
-                original_text_preserved=True,
-                provider_name="presidio",
-                provider_version="latest",
-                is_degraded=False,
+            PrivacyDetectionResult(
+                run_id=unit.run_id,
+                doc_id=unit.doc_id,
+                text_hash=unit.text_hash,
+                pii_count=len(findings),
+                risk_score=round(risk_score, 4),
+                summary=summary,
+                findings=findings,
+                needs_adjudication=needs_adjudication,
+                hard_case_reasons=sorted(set(hard_case_reasons)),
+                provider_name=provider_name,
+                provider_version="presidio-analyzer+rules" if provider_name.startswith("presidio") else "builtin-2026.04",
+                is_degraded=is_degraded,
             )
         )
 
-        if pii_entities:
-            logger.debug(
-                "文档 %s: 检测到 %d 个 PII 实体",
-                doc.doc_id, len(pii_entities),
-            )
-
-    total_pii = sum(r.pii_count for r in results)
-    logger.info(
-        "隐私检测完成: 共 %d 个 PII 实体，涉及 %d 个文档",
-        total_pii, len(results),
-    )
+    logger.info("Privacy detection completed: %d documents", len(results))
     return results

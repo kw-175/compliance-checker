@@ -1,203 +1,440 @@
-# ──────────────────────────────────────────────────────────────
-# 步骤 A – 输入接入 (Source Intake)
-# ──────────────────────────────────────────────────────────────
-#
-# 功能：
-#   扫描用户输入的路径（文件、目录、URL），为每个独立的输入来源
-#   生成一条 SourceRecord 记录，包含文件哈希、MIME 类型和大小信息。
-#
-# 在流水线中的位置：
-#   A(本步骤) → B1(来源分类)
-#
-# 输出产物：
-#   source_registry.jsonl（每行一条 SourceRecord JSON）
-# ──────────────────────────────────────────────────────────────
-
-"""
-步骤 A – 输入接入。
-
-扫描输入路径（文件、目录、URL），为每个来源对象生成
-SourceRecord 记录，包含 SHA-256 哈希、MIME 类型和文件大小。
-
-输出 → source_registry.jsonl
-"""
-
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
-import mimetypes
-import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Any, Protocol
 
-from text.models.schemas import SourceRecord
+from text.models.schemas import IngestUnit, PackageAsset
 
 logger = logging.getLogger(__name__)
 
-# 流式哈希计算的缓冲区大小：64 KiB
-# 使用流式读取避免大文件一次性加载到内存
-BUFFER_SIZE = 65_536
+TEXT_FIELD_CANDIDATES = (
+    "cleaned_text",
+    "text",
+    "content",
+    "body",
+    "document_text",
+    "normalized_text",
+    "payload_text",
+)
+DOC_ID_CANDIDATES = ("doc_id", "id", "record_id", "sample_id", "uid")
+PACKAGE_METADATA_KEYS = ("task_id", "tenant_id", "profile_id", "source_type", "file_hash")
 
 
-def _sha256(file_path: Path) -> str:
-    """
-    计算文件的 SHA-256 哈希值。
-
-    使用流式读取方式处理，每次读取 BUFFER_SIZE 字节的数据块，
-    避免大文件耗尽内存。
-
-    Args:
-        file_path: 文件路径
-
-    Returns:
-        文件内容的 SHA-256 十六进制哈希字符串
-    """
-    h = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        # 海象运算符 (:=)：读取数据块并赋值给 chunk，当 chunk 为空时退出循环
-        while chunk := f.read(BUFFER_SIZE):
-            h.update(chunk)
-    return h.hexdigest()
+def _read_text(path: Path) -> str:
+    for encoding in ("utf-8", "utf-8-sig", "gb18030"):
+        try:
+            return path.read_text(encoding=encoding)
+        except UnicodeDecodeError:
+            continue
+    return path.read_text(encoding="utf-8", errors="ignore")
 
 
-def _detect_mime(file_path: Path) -> str:
-    """
-    检测文件的 MIME 类型。
-
-    使用 Python 内置的 mimetypes 模块根据文件扩展名猜测 MIME 类型。
-    若无法识别，返回通用的 "application/octet-stream"。
-
-    Args:
-        file_path: 文件路径
-
-    Returns:
-        MIME 类型字符串（如 "text/plain"、"application/pdf"）
-    """
-    mime, _ = mimetypes.guess_type(str(file_path))
-    return mime or "application/octet-stream"
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
-def _is_url(path: str) -> bool:
-    """
-    判断给定路径是否为 URL。
-
-    Args:
-        path: 输入路径字符串
-
-    Returns:
-        如果路径以 http:// 或 https:// 开头则返回 True
-    """
-    return path.startswith("http://") or path.startswith("https://")
+def _sha256_text(text: str) -> str:
+    return _sha256_bytes(text.encode("utf-8"))
 
 
-def _download_url(url: str) -> Optional[Path]:
-    """
-    下载 URL 指向的资源到临时文件。
-
-    支持 HTTP/HTTPS 协议，将远程资源下载到本地临时文件中，
-    以便后续步骤进行扫描和分析。
-
-    Args:
-        url: 要下载的 URL
-
-    Returns:
-        下载后的临时文件路径；下载失败时返回 None
-    """
-    try:
-        import httpx
-    except ImportError:
-        logger.warning(
-            "httpx 未安装，无法下载 URL '%s'。请安装：pip install httpx", url
-        )
-        return None
-
-    try:
-        # 使用流式下载处理大文件
-        with httpx.stream("GET", url, follow_redirects=True, timeout=60) as resp:
-            resp.raise_for_status()
-            # 从 URL 中提取文件后缀名，用于生成临时文件
-            suffix = Path(url.split("?")[0].split("#")[0]).suffix or ".tmp"
-            tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
-            for chunk in resp.iter_bytes(BUFFER_SIZE):
-                tmp.write(chunk)
-            tmp.close()
-            logger.info("已下载 URL '%s' 到临时文件 '%s'", url, tmp.name)
-            return Path(tmp.name)
-    except Exception as e:
-        logger.error("下载 URL '%s' 失败: %s", url, e)
-        return None
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(65_536):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-def _collect_files(input_path: str) -> list[Path]:
-    """
-    将单个输入路径展开为具体的文件路径列表。
+def _infer_language(text: str) -> str:
+    if not text:
+        return "unknown"
+    chinese = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
+    latin = sum(1 for ch in text if ch.isascii() and ch.isalpha())
+    if chinese and chinese >= latin:
+        return "zh"
+    if latin:
+        return "en"
+    return "unknown"
 
-    处理三种输入类型：
-    1. 单个文件路径 → 返回包含该文件的列表
-    2. 目录路径 → 递归遍历所有子文件
-    3. URL → 下载到临时文件后返回
-    4. 不存在的路径 → 记录警告，返回空列表
 
-    Args:
-        input_path: 输入路径（文件路径、目录路径或 URL）
-
-    Returns:
-        展开后的文件路径列表（已排序）
-    """
-    # 处理 URL 输入：下载到临时文件
-    if _is_url(input_path):
-        downloaded = _download_url(input_path)
-        if downloaded is not None:
-            return [downloaded]
-        return []
-
-    # 处理本地路径
-    p = Path(input_path)
-    if p.is_file():
-        return [p]
-    if p.is_dir():
-        # 递归遍历目录下所有文件（排除子目录本身），按路径排序保证确定性
-        return sorted(f for f in p.rglob("*") if f.is_file())
-
-    # 路径不存在
-    logger.warning("跳过不存在的路径: %s", input_path)
+def _candidate_profiles(record: dict[str, Any], package_metadata: dict[str, Any]) -> list[str]:
+    values = record.get("candidate_profiles") or package_metadata.get("candidate_profiles") or []
+    if isinstance(values, str):
+        return [values]
+    if isinstance(values, list):
+        return [str(item) for item in values if str(item).strip()]
     return []
 
 
-def run(input_paths: list[str]) -> list[SourceRecord]:
-    """
-    执行输入接入步骤。
+def _normalize_doc_id(record: dict[str, Any], text: str, source_path: Path, line_no: int = 0) -> str:
+    for key in DOC_ID_CANDIDATES:
+        value = record.get(key)
+        if value:
+            return str(value)
+    suffix = _sha256_text(f"{source_path}:{line_no}:{text}")[:12]
+    return f"doc_{suffix}"
 
-    遍历所有输入路径，为每个文件生成一条 SourceRecord，
-    包含文件的绝对路径、大小、SHA-256 哈希和 MIME 类型。
 
-    Args:
-        input_paths: 文件路径、目录路径或 URL 的列表
+def _extract_text(record: dict[str, Any]) -> tuple[str, str] | None:
+    for key in TEXT_FIELD_CANDIDATES:
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return value, key
+    payload = record.get("payload")
+    if isinstance(payload, dict):
+        return _extract_text(payload)
+    document = record.get("document")
+    if isinstance(document, dict):
+        return _extract_text(document)
+    return None
 
-    Returns:
-        SourceRecord 列表，每条记录对应一个输入文件
-    """
-    records: list[SourceRecord] = []
 
-    for raw_path in input_paths:
-        # 将输入路径展开为具体文件列表
-        files = _collect_files(raw_path)
+def _package_assets(paths: list[Path], asset_type: str, role: str) -> list[PackageAsset]:
+    assets: list[PackageAsset] = []
+    for path in sorted({p.resolve() for p in paths}):
+        metadata: dict[str, Any] = {}
+        if path.exists() and path.is_file():
+            metadata["sha256"] = _sha256_path(path)
+        assets.append(
+            PackageAsset(
+                asset_type=asset_type,
+                uri=str(path),
+                role=role,
+                metadata=metadata,
+            )
+        )
+    return assets
 
-        for fp in files:
-            try:
-                # 为每个文件创建 SourceRecord
-                record = SourceRecord(
-                    path=str(fp.resolve()),           # 文件绝对路径
-                    size_bytes=fp.stat().st_size,      # 文件大小（字节）
-                    sha256=_sha256(fp),                # SHA-256 哈希值
-                    mime_type=_detect_mime(fp),         # MIME 类型
+
+def _load_json_file(path: Path) -> Any:
+    return json.loads(_read_text(path))
+
+
+def _load_package_metadata(paths: list[Path]) -> tuple[dict[str, Any], list[PackageAsset]]:
+    metadata: dict[str, Any] = {}
+    metadata_refs: list[PackageAsset] = []
+
+    for path in paths:
+        metadata_refs.append(
+            PackageAsset(
+                asset_type="metadata",
+                uri=str(path),
+                role="package_metadata",
+                metadata={"sha256": _sha256_path(path)},
+            )
+        )
+        if path.suffix.lower() == ".json":
+            payload = _load_json_file(path)
+            if isinstance(payload, dict):
+                metadata.update(payload)
+        elif path.suffix.lower() == ".jsonl":
+            with path.open("r", encoding="utf-8") as handle:
+                for raw_line in handle:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        payload = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(payload, dict):
+                        metadata.update(payload)
+    return metadata, metadata_refs
+
+
+def _build_ingest_unit(
+    *,
+    run_id: str,
+    package_id: str,
+    package_kind: str,
+    parser_name: str,
+    source_path: Path,
+    text: str,
+    doc_id: str,
+    record: dict[str, Any],
+    package_metadata: dict[str, Any],
+    raw_text_refs: list[PackageAsset],
+    cleaned_data_refs: list[PackageAsset],
+    metadata_refs: list[PackageAsset],
+) -> IngestUnit:
+    merged_metadata = dict(package_metadata)
+    record_metadata = record.get("metadata")
+    if isinstance(record_metadata, dict):
+        merged_metadata.update(record_metadata)
+    for key in PACKAGE_METADATA_KEYS:
+        if key in record and record[key] not in (None, ""):
+            merged_metadata[key] = record[key]
+
+    extensions = {
+        key: value
+        for key, value in record.items()
+        if key not in TEXT_FIELD_CANDIDATES and key not in DOC_ID_CANDIDATES and key != "metadata"
+    }
+
+    return IngestUnit(
+        run_id=run_id,
+        package_id=package_id,
+        doc_id=doc_id,
+        source_path=str(source_path),
+        text=text,
+        text_hash=_sha256_text(text),
+        language=_infer_language(text),
+        source_type=str(merged_metadata.get("source_type", "")),
+        task_id=str(merged_metadata.get("task_id", "")),
+        tenant_id=str(merged_metadata.get("tenant_id", "")),
+        profile_id=str(merged_metadata.get("profile_id", "")),
+        file_hash=str(merged_metadata.get("file_hash", "")) or _sha256_text(text),
+        package_kind=package_kind,
+        parser_name=parser_name,
+        candidate_profiles=_candidate_profiles(record, merged_metadata),
+        raw_text_refs=raw_text_refs,
+        cleaned_data_refs=cleaned_data_refs,
+        metadata_refs=metadata_refs,
+        metadata=merged_metadata,
+        extensions=extensions,
+    )
+
+
+class PackageParser(Protocol):
+    name: str
+
+    def can_handle(self, path: Path) -> bool:
+        ...
+
+    def parse(self, path: Path, run_id: str) -> list[IngestUnit]:
+        ...
+
+
+class JsonlPackageParser:
+    name = "jsonl_package"
+
+    def can_handle(self, path: Path) -> bool:
+        return path.is_file() and path.suffix.lower() == ".jsonl"
+
+    def parse(self, path: Path, run_id: str) -> list[IngestUnit]:
+        package_id = f"pkg_{_sha256_text(str(path.resolve()))[:12]}"
+        cleaned_data_refs = _package_assets([path], "cleaned_data", "primary_jsonl")
+        units: list[IngestUnit] = []
+
+        with path.open("r", encoding="utf-8") as handle:
+            for line_no, raw_line in enumerate(handle, start=1):
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    logger.debug("Skipping non-JSON line %s in %s", line_no, path)
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                extracted = _extract_text(payload)
+                if extracted is None:
+                    continue
+                text, _ = extracted
+                doc_id = _normalize_doc_id(payload, text, path, line_no)
+                units.append(
+                    _build_ingest_unit(
+                        run_id=run_id,
+                        package_id=package_id,
+                        package_kind="jsonl",
+                        parser_name=self.name,
+                        source_path=path,
+                        text=text,
+                        doc_id=doc_id,
+                        record=payload,
+                        package_metadata={},
+                        raw_text_refs=[],
+                        cleaned_data_refs=cleaned_data_refs,
+                        metadata_refs=[],
+                    )
                 )
-                records.append(record)
-                logger.debug("已注册来源: %s", record.source_id)
-            except Exception:
-                # 单个文件处理失败不影响其他文件
-                logger.exception("注册来源失败: %s", fp)
+        return units
 
-    logger.info("输入接入完成: 共注册 %d 个来源", len(records))
-    return records
+
+class JsonPackageParser:
+    name = "json_package"
+
+    def can_handle(self, path: Path) -> bool:
+        return path.is_file() and path.suffix.lower() == ".json"
+
+    def parse(self, path: Path, run_id: str) -> list[IngestUnit]:
+        payload = _load_json_file(path)
+        records: list[dict[str, Any]] = []
+
+        if isinstance(payload, dict):
+            if isinstance(payload.get("documents"), list):
+                records.extend(item for item in payload["documents"] if isinstance(item, dict))
+            elif isinstance(payload.get("records"), list):
+                records.extend(item for item in payload["records"] if isinstance(item, dict))
+            elif _extract_text(payload):
+                records.append(payload)
+        elif isinstance(payload, list):
+            records.extend(item for item in payload if isinstance(item, dict))
+
+        package_id = f"pkg_{_sha256_text(str(path.resolve()))[:12]}"
+        cleaned_data_refs = _package_assets([path], "cleaned_data", "primary_json")
+        units: list[IngestUnit] = []
+        for index, record in enumerate(records, start=1):
+            extracted = _extract_text(record)
+            if extracted is None:
+                continue
+            text, _ = extracted
+            doc_id = _normalize_doc_id(record, text, path, index)
+            units.append(
+                _build_ingest_unit(
+                    run_id=run_id,
+                    package_id=package_id,
+                    package_kind="json",
+                    parser_name=self.name,
+                    source_path=path,
+                    text=text,
+                    doc_id=doc_id,
+                    record=record,
+                    package_metadata=payload if isinstance(payload, dict) else {},
+                    raw_text_refs=[],
+                    cleaned_data_refs=cleaned_data_refs,
+                    metadata_refs=[],
+                )
+            )
+        return units
+
+
+class TextFilePackageParser:
+    name = "text_file_package"
+
+    def can_handle(self, path: Path) -> bool:
+        return path.is_file() and path.suffix.lower() in {".txt", ".text", ".md"}
+
+    def parse(self, path: Path, run_id: str) -> list[IngestUnit]:
+        text = _read_text(path).strip()
+        if not text:
+            return []
+        package_id = f"pkg_{_sha256_text(str(path.resolve()))[:12]}"
+        raw_text_refs = _package_assets([path], "raw_text", "primary_text")
+        record = {"doc_id": path.stem, "text": text}
+        return [
+            _build_ingest_unit(
+                run_id=run_id,
+                package_id=package_id,
+                package_kind="text_file",
+                parser_name=self.name,
+                source_path=path,
+                text=text,
+                doc_id=path.stem,
+                record=record,
+                package_metadata={},
+                raw_text_refs=raw_text_refs,
+                cleaned_data_refs=[],
+                metadata_refs=[],
+            )
+        ]
+
+
+class DirectoryPackageParser:
+    name = "directory_package"
+
+    def can_handle(self, path: Path) -> bool:
+        return path.is_dir()
+
+    def parse(self, path: Path, run_id: str) -> list[IngestUnit]:
+        files = [candidate for candidate in path.rglob("*") if candidate.is_file()]
+        metadata_files = [
+            candidate
+            for candidate in files
+            if candidate.name.lower().startswith("metadata")
+            or candidate.name.lower().startswith("manifest")
+        ]
+        cleaned_files = [
+            candidate
+            for candidate in files
+            if candidate.suffix.lower() in {".jsonl", ".json"} and candidate not in metadata_files
+        ]
+        raw_text_files = [
+            candidate
+            for candidate in files
+            if candidate.suffix.lower() in {".txt", ".text", ".md"}
+        ]
+
+        package_metadata, metadata_refs = _load_package_metadata(metadata_files)
+        raw_text_refs = _package_assets(raw_text_files, "raw_text", "package_raw_text")
+        cleaned_data_refs = _package_assets(cleaned_files, "cleaned_data", "package_cleaned_data")
+        package_id = f"pkg_{_sha256_text(str(path.resolve()))[:12]}"
+
+        units: list[IngestUnit] = []
+        for cleaned_path in cleaned_files:
+            parser = JsonlPackageParser() if cleaned_path.suffix.lower() == ".jsonl" else JsonPackageParser()
+            for unit in parser.parse(cleaned_path, run_id):
+                merged_metadata = {**package_metadata, **unit.metadata}
+                units.append(
+                    unit.model_copy(
+                        update={
+                            "package_id": package_id,
+                            "package_kind": "directory",
+                            "parser_name": self.name,
+                            "raw_text_refs": raw_text_refs,
+                            "cleaned_data_refs": cleaned_data_refs,
+                            "metadata_refs": metadata_refs,
+                            "metadata": merged_metadata,
+                            "task_id": str(merged_metadata.get("task_id", unit.task_id)),
+                            "tenant_id": str(merged_metadata.get("tenant_id", unit.tenant_id)),
+                            "profile_id": str(merged_metadata.get("profile_id", unit.profile_id)),
+                            "source_type": str(merged_metadata.get("source_type", unit.source_type)),
+                            "file_hash": str(merged_metadata.get("file_hash", unit.file_hash)),
+                        }
+                    )
+                )
+
+        if units:
+            return units
+
+        for raw_text in raw_text_files:
+            text = _read_text(raw_text).strip()
+            if not text:
+                continue
+            record = {"doc_id": raw_text.stem, "text": text}
+            units.append(
+                _build_ingest_unit(
+                    run_id=run_id,
+                    package_id=package_id,
+                    package_kind="directory",
+                    parser_name=self.name,
+                    source_path=raw_text,
+                    text=text,
+                    doc_id=raw_text.stem,
+                    record=record,
+                    package_metadata=package_metadata,
+                    raw_text_refs=raw_text_refs,
+                    cleaned_data_refs=cleaned_data_refs,
+                    metadata_refs=metadata_refs,
+                )
+            )
+        return units
+
+
+DEFAULT_PARSERS: tuple[PackageParser, ...] = (
+    DirectoryPackageParser(),
+    JsonlPackageParser(),
+    JsonPackageParser(),
+    TextFilePackageParser(),
+)
+
+
+def run(package_paths: list[str], run_id: str = "") -> list[IngestUnit]:
+    units: list[IngestUnit] = []
+    for raw_path in package_paths:
+        path = Path(raw_path)
+        parser = next((candidate for candidate in DEFAULT_PARSERS if candidate.can_handle(path)), None)
+        if parser is None:
+            logger.warning("No cleaned-package parser matched %s", raw_path)
+            continue
+        parsed_units = parser.parse(path, run_id)
+        if not parsed_units:
+            logger.warning("Parser %s found no ingest units in %s", parser.name, raw_path)
+        units.extend(parsed_units)
+
+    logger.info("Cleaned package intake completed: %d ingest units", len(units))
+    return units

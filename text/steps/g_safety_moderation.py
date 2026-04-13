@@ -1,371 +1,309 @@
-# ──────────────────────────────────────────────────────────────
-# 步骤 G – 语义安全审核 (Semantic Safety Moderation)
-# ──────────────────────────────────────────────────────────────
-#
-# 功能：
-#   对脱敏后的文本进行安全性分类，判断内容的危害等级。
-#   使用 Qwen3Guard 模型进行三级分类：
-#     Safe (安全) / Controversial (争议) / Unsafe (不安全)
-#
-# 危害类别检测：
-#   violent_content, non_violent_illegal, sexual_content,
-#   pii_exposure, suicide_self_harm, unethical_acts,
-#   politically_sensitive, copyright_violation, jailbreak_attempt,
-#   hate_speech, discrimination
-#
-# 模型信息：
-#   Qwen/Qwen3-Guard-0.6B — 千问安全卫士模型（0.6B 参数量）
-#   需要 GPU 运行（推荐 CUDA），CPU 推理速度较慢
-#
-# Fallback 策略：
-#   - Qwen3Guard 不可用（无 GPU / 未安装 transformers）
-#     → 使用关键词匹配的 mock 分类器
-#
-# 在流水线中的位置：
-#   F(隐私检测) → G(本步骤) → H(证据聚合)
-#
-# 输出产物：
-#   safety_checked.jsonl
-# ──────────────────────────────────────────────────────────────
-
-"""
-步骤 G – 语义安全审核。
-
-使用 Qwen3Guard 对脱敏文本进行安全性三级分类。
-Fallback 为基于关键词的 mock 分类器。
-
-输出 → safety_checked.jsonl
-"""
-
 from __future__ import annotations
 
 import logging
-import re
-from typing import Optional
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
 
-from text.config.settings import Settings
-from text.models.schemas import PrivacyResult, SafetyLevel, SafetyResult
+import yaml
+
+from text.config.settings import Settings, get_settings
+from text.models.schemas import (
+    ContentSafetyResult,
+    DetectionFinding,
+    DetectionStatus,
+    IngestUnit,
+    Severity,
+    TextSpan,
+)
 
 logger = logging.getLogger(__name__)
 
-# 模块级单例（模型和分词器的延迟加载缓存）
-_model = None
-_tokenizer = None
-
-
-# ────────────────────────────────────────────────────────────
-# Qwen3Guard 模型加载器
-# ────────────────────────────────────────────────────────────
-
-def _load_model(settings: Settings):
-    """
-    延迟加载 Qwen3Guard 模型和分词器。
-
-    首次调用时从 HuggingFace Hub 下载模型并加载到指定设备。
-    后续调用直接返回缓存实例。
-
-    Args:
-        settings: 配置对象（包含模型名和设备配置）
-
-    Returns:
-        (model, tokenizer) 元组
-    """
-    global _model, _tokenizer
-    if _model is not None:
-        return _model, _tokenizer
-
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-    import torch
-
-    # 设备选择：auto 模式下自动检测 CUDA 可用性
-    device = settings.qwen_guard_device
-    if device == "auto":
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    logger.info(
-        "正在加载 Qwen3Guard 模型 '%s' 到设备 '%s'...",
-        settings.qwen_guard_model, device,
-    )
-
-    # 加载分词器
-    _tokenizer = AutoTokenizer.from_pretrained(
-        settings.qwen_guard_model,
-        trust_remote_code=True,  # Qwen 模型需要信任远程代码
-    )
-
-    # 加载模型
-    _model = AutoModelForCausalLM.from_pretrained(
-        settings.qwen_guard_model,
-        trust_remote_code=True,
-        torch_dtype="auto",  # 自动选择精度（fp16/bf16/fp32）
-    ).to(device)
-
-    # 设为评估模式（禁用 dropout 等训练时组件）
-    _model.eval()
-
-    logger.info("Qwen3Guard 模型加载完成")
-    return _model, _tokenizer
-
-
-# ────────────────────────────────────────────────────────────
-# 安全分类逻辑
-# ────────────────────────────────────────────────────────────
-
-# 提示词模板：指示模型进行安全分类
-_SAFETY_PROMPT_TEMPLATE = """You are a content safety classifier. Classify the following text into one of three categories: Safe, Controversial, or Unsafe.
-
-Also identify any specific harm categories present from this list:
-- violent_content
-- non_violent_illegal
-- sexual_content
-- pii_exposure
-- suicide_self_harm
-- unethical_acts
-- politically_sensitive
-- copyright_violation
-- jailbreak_attempt
-- hate_speech
-- discrimination
-
-Text to classify:
----
-{text}
----
-
-Respond in this exact format:
-Safety: <Safe|Controversial|Unsafe>
-Categories: <comma-separated list or "none">
-"""
-
-# 所有可能的危害类别集合
-_HARM_CATEGORIES = {
-    "violent_content", "non_violent_illegal", "sexual_content",
-    "pii_exposure", "suicide_self_harm", "unethical_acts",
-    "politically_sensitive", "copyright_violation", "jailbreak_attempt",
-    "hate_speech", "discrimination",
+SEVERITY_WEIGHTS = {
+    Severity.LOW: 0.30,
+    Severity.MEDIUM: 0.55,
+    Severity.HIGH: 0.80,
+    Severity.CRITICAL: 1.00,
 }
 
 
-def _parse_safety_output(raw_output: str) -> tuple[SafetyLevel, list[str]]:
-    """
-    解析模型输出，提取安全等级和危害类别。
-
-    解析策略：
-    1. 在输出中搜索 "unsafe"/"controversial" 关键词判断安全等级
-    2. 匹配所有出现的危害类别名称
-
-    Args:
-        raw_output: 模型原始输出文本
-
-    Returns:
-        (安全等级, 危害类别列表)
-    """
-    raw_lower = raw_output.lower()
-
-    # 提取安全等级（注意顺序："unsafe" 必须在 "safe" 之前检查）
-    safety_level = SafetyLevel.SAFE
-    if "unsafe" in raw_lower:
-        safety_level = SafetyLevel.UNSAFE
-    elif "controversial" in raw_lower:
-        safety_level = SafetyLevel.CONTROVERSIAL
-
-    # 提取危害类别
-    categories: list[str] = []
-    for cat in _HARM_CATEGORIES:
-        if cat.lower() in raw_lower:
-            categories.append(cat)
-
-    return safety_level, categories
+@lru_cache(maxsize=4)
+def _load_rules(path: str) -> dict:
+    with Path(path).open("r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
 
 
-def _classify_text(
-    text: str,
-    model,
-    tokenizer,
-    device: str,
-    max_input_len: int = 2048,
-) -> tuple[SafetyLevel, list[str], str]:
-    """
-    使用 Qwen3Guard 对单段文本进行安全分类。
+def _find_matches(text: str, keyword: str) -> list[tuple[int, int]]:
+    matches: list[tuple[int, int]] = []
+    haystack = text.lower()
+    needle = keyword.lower()
+    start = 0
+    while True:
+        index = haystack.find(needle, start)
+        if index == -1:
+            return matches
+        matches.append((index, index + len(needle)))
+        start = index + len(needle)
 
-    处理流程：
-    1. 构造提示词（截断过长文本）
-    2. 使用 chat template 格式化输入
-    3. Tokenize 并推理
-    4. 解码输出并解析结果
 
-    Args:
-        text: 待分类文本
-        model: Qwen3Guard 模型
-        tokenizer: 分词器
-        device: 计算设备
-        max_input_len: 最大输入文本长度
+def _context(text: str, start: int, end: int, window: int = 40) -> tuple[str, str]:
+    before = text[max(0, start - window):start]
+    after = text[end:min(len(text), end + window)]
+    return before, after
 
-    Returns:
-        (安全等级, 危害类别列表, 原始输出文本)
-    """
-    import torch
 
-    # 构造提示词，截断过长文本
-    prompt = _SAFETY_PROMPT_TEMPLATE.format(text=text[:max_input_len])
+def _context_is_ambiguous(text: str, start: int, end: int, markers: list[str]) -> bool:
+    before, after = _context(text, start, end, 50)
+    snippet = f"{before} {text[start:end]} {after}".lower()
+    return any(marker.lower() in snippet for marker in markers)
 
-    # 使用 chat template 格式化为模型期望的输入格式
-    messages = [{"role": "user", "content": prompt}]
-    formatted = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
+
+def _build_finding(
+    unit: IngestUnit,
+    *,
+    risk_type: str,
+    policy_tag: str,
+    severity: Severity,
+    keyword: str,
+    start: int,
+    end: int,
+    ambiguous: bool,
+) -> DetectionFinding:
+    before, after = _context(unit.text, start, end)
+    confidence = min(0.98, SEVERITY_WEIGHTS[severity] + 0.1)
+    if ambiguous:
+        confidence = max(0.35, confidence - 0.28)
+
+    explanation = f"Matched content keyword '{keyword}'"
+    if ambiguous:
+        explanation += " in an educational/reporting context"
+
+    return DetectionFinding(
+        doc_id=unit.doc_id,
+        finding_type="content_safety",
+        risk_type=risk_type,
+        policy_tag=policy_tag,
+        severity=severity,
+        confidence=round(confidence, 4),
+        explanation=explanation,
+        source_tool="content_rule_engine",
+        remediation_suggestion="manual_review" if ambiguous else "block_or_isolate",
+        needs_adjudication=ambiguous,
+        hard_case_reason="ambiguous_context" if ambiguous else "",
+        span=TextSpan(
+            start=start,
+            end=end,
+            text=unit.text[start:end],
+            context_before=before,
+            context_after=after,
+        ),
+        attributes={"matched_keyword": keyword},
     )
 
-    # Tokenize 并转移到目标设备
-    inputs = tokenizer(formatted, return_tensors="pt").to(device)
 
-    # 推理（无梯度计算）
-    with torch.no_grad():
-        output_ids = model.generate(
-            **inputs,
-            max_new_tokens=128,   # 限制输出长度
-            do_sample=False,      # 贪心解码（确定性输出）
-            temperature=0.0,      # temperature=0 等效于贪心解码
+def _normalize_guard_label(payload: dict[str, Any]) -> str:
+    value = (
+        payload.get("safety")
+        or payload.get("label")
+        or payload.get("status")
+        or payload.get("classification")
+        or payload.get("result")
+        or ""
+    )
+    label = str(value).strip().lower()
+    if label in {"unsafe", "violation", "blocked", "flagged"}:
+        return "unsafe"
+    if label in {"controversial", "borderline", "hard_case", "review", "sensitive"}:
+        return "controversial"
+    if label in {"safe", "clear", "ok", "allow"}:
+        return "safe"
+    return "controversial" if label else "safe"
+
+
+def _qwen3guard_categories(payload: dict[str, Any]) -> list[str]:
+    categories = payload.get("categories") or payload.get("risk_categories") or payload.get("labels") or []
+    if isinstance(categories, str):
+        return [item.strip() for item in categories.replace(";", ",").split(",") if item.strip()]
+    if isinstance(categories, list):
+        return [str(item).strip() for item in categories if str(item).strip()]
+    return []
+
+
+def _call_qwen3guard(unit: IngestUnit, settings: Settings) -> tuple[dict[str, Any] | None, str]:
+    if not settings.enable_qwen3guard or not settings.qwen3guard_endpoint:
+        return None, ""
+
+    try:
+        import httpx
+
+        response = httpx.post(
+            settings.qwen3guard_endpoint,
+            json={
+                "doc_id": unit.doc_id,
+                "text": unit.text[: settings.qwen3guard_max_chars],
+                "model": settings.qwen3guard_model_name,
+            },
+            timeout=settings.qwen3guard_timeout_seconds,
         )
-
-    # 仅解码新生成的 token（排除输入部分）
-    new_tokens = output_ids[0][inputs["input_ids"].shape[1]:]
-    raw_output = tokenizer.decode(new_tokens, skip_special_tokens=True)
-
-    # 解析输出
-    safety_level, categories = _parse_safety_output(raw_output)
-    return safety_level, categories, raw_output
-
-
-# ────────────────────────────────────────────────────────────
-# Mock 分类器 fallback（无 GPU / 无模型时使用）
-# 基于简单关键词匹配的启发式分类
-# ────────────────────────────────────────────────────────────
-
-# 不安全关键词集合（中英文）
-_UNSAFE_KEYWORDS = {
-    "bomb", "kill", "murder", "terrorism", "exploit", "hack",
-    "drug", "cocaine", "heroin", "meth",
-    "炸弹", "杀人", "恐怖", "毒品",
-}
-
-# 争议关键词集合（中英文）
-_CONTROVERSIAL_KEYWORDS = {
-    "political", "protest", "rebellion", "censorship",
-    "政治", "抗议", "审查",
-}
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return None, "qwen3guard_non_object_response"
+        return payload, ""
+    except Exception as exc:
+        logger.warning("Qwen3Guard detection failed for %s: %s", unit.doc_id, exc)
+        return None, "qwen3guard_service_unavailable"
 
 
-def _mock_classify(text: str) -> tuple[SafetyLevel, list[str], str]:
-    """
-    基于关键词的 Mock 安全分类器。
+def _build_qwen3guard_finding(
+    unit: IngestUnit,
+    payload: dict[str, Any],
+    label: str,
+    settings: Settings,
+) -> DetectionFinding | None:
+    if label == "safe":
+        return None
 
-    仅用于开发/测试环境，当 Qwen3Guard 不可用时作为降级方案。
-    准确率很低，生产环境应使用真实模型。
+    categories = _qwen3guard_categories(payload)
+    score = payload.get("score") or payload.get("confidence")
+    try:
+        confidence = float(score)
+    except (TypeError, ValueError):
+        confidence = 0.88 if label == "unsafe" else 0.62
 
-    Args:
-        text: 待分类文本
+    severity = Severity.HIGH if label == "unsafe" else Severity.MEDIUM
+    risk_type = categories[0].lower().replace(" ", "_") if categories else "general_content_safety"
+    needs_adjudication = label == "controversial"
+    text_excerpt = unit.text[: min(len(unit.text), settings.qwen3guard_max_chars, 500)]
 
-    Returns:
-        (安全等级, 危害类别列表, 分类说明)
-    """
-    text_lower = text.lower()
+    return DetectionFinding(
+        doc_id=unit.doc_id,
+        finding_type="content_safety",
+        risk_type=risk_type,
+        policy_tag=f"content.qwen3guard.{label}",
+        severity=severity,
+        confidence=round(max(0.0, min(confidence, 1.0)), 4),
+        explanation=f"Qwen3Guard classified the text as {label}.",
+        source_tool=f"qwen3guard.{settings.qwen3guard_model_name}",
+        remediation_suggestion="manual_review" if needs_adjudication else "block_or_isolate",
+        needs_adjudication=needs_adjudication,
+        hard_case_reason="qwen3guard_borderline" if needs_adjudication else "",
+        span=TextSpan(
+            start=0,
+            end=len(text_excerpt),
+            text=text_excerpt,
+            context_before="",
+            context_after=unit.text[len(text_excerpt):len(text_excerpt) + 40],
+        ),
+        attributes={
+            "qwen3guard_label": label,
+            "qwen3guard_categories": categories,
+            "raw_response": payload,
+        },
+    )
 
-    # 检查不安全关键词
-    for kw in _UNSAFE_KEYWORDS:
-        if kw in text_lower:
-            return SafetyLevel.UNSAFE, ["violent_content"], f"mock: 匹配到关键词 '{kw}'"
 
-    # 检查争议关键词
-    for kw in _CONTROVERSIAL_KEYWORDS:
-        if kw in text_lower:
-            return SafetyLevel.CONTROVERSIAL, ["politically_sensitive"], f"mock: 匹配到关键词 '{kw}'"
+def _deduplicate(findings: list[DetectionFinding]) -> list[DetectionFinding]:
+    deduped: dict[tuple[int, int, str], DetectionFinding] = {}
+    for finding in findings:
+        if finding.span is None:
+            continue
+        key = (finding.span.start, finding.span.end, finding.policy_tag)
+        existing = deduped.get(key)
+        if existing is None or finding.confidence > existing.confidence:
+            deduped[key] = finding
+    return list(deduped.values())
 
-    # 默认安全
-    return SafetyLevel.SAFE, [], "mock: 未发现风险关键词"
-
-
-# ────────────────────────────────────────────────────────────
-# 公共 API
-# ────────────────────────────────────────────────────────────
 
 def run(
-    privacy_results: list[PrivacyResult],
+    ingest_units: list[IngestUnit],
     settings: Settings | None = None,
-) -> list[SafetyResult]:
-    """
-    执行语义安全审核。
+) -> list[ContentSafetyResult]:
+    settings = settings or get_settings()
+    rules = _load_rules(str(settings.content_rules_path))
+    categories = rules.get("categories", {})
+    markers = list(rules.get("ambiguous_context_markers", []))
 
-    对每个文档的脱敏文本进行安全性分类。
-    优先使用 Qwen3Guard 模型，不可用时回退到 Mock 分类器。
+    results: list[ContentSafetyResult] = []
+    for unit in ingest_units:
+        findings: list[DetectionFinding] = []
+        hard_case_reasons: list[str] = []
+        provider_name = "rule_safety_detector"
+        is_degraded = False
 
-    Args:
-        privacy_results: 隐私检测结果列表（步骤 F 输出，包含 redacted_text）
-        settings: 配置对象（可选）
+        guard_payload, guard_error = _call_qwen3guard(unit, settings)
+        if guard_error:
+            is_degraded = True
+            hard_case_reasons.append(guard_error)
+        if guard_payload is not None:
+            provider_name = "qwen3guard+rule_safety_detector"
+            guard_label = _normalize_guard_label(guard_payload)
+            guard_finding = _build_qwen3guard_finding(unit, guard_payload, guard_label, settings)
+            if guard_finding is not None:
+                findings.append(guard_finding)
+                if guard_finding.needs_adjudication:
+                    hard_case_reasons.append("qwen3guard_borderline")
 
-    Returns:
-        SafetyResult 列表
-    """
-    if settings is None:
-        from text.config.settings import get_settings
-        settings = get_settings()
+        for category_name, category_rule in categories.items():
+            severity = Severity(category_rule["severity"])
+            risk_type = str(category_rule["risk_type"])
+            policy_tag = str(category_rule["policy_tag"])
+            for keyword in category_rule.get("keywords", []):
+                for start, end in _find_matches(unit.text, str(keyword)):
+                    ambiguous = _context_is_ambiguous(unit.text, start, end, markers)
+                    if ambiguous and "ambiguous_context" not in hard_case_reasons:
+                        hard_case_reasons.append("ambiguous_context")
+                    findings.append(
+                        _build_finding(
+                            unit,
+                            risk_type=risk_type,
+                            policy_tag=policy_tag,
+                            severity=severity,
+                            keyword=str(keyword),
+                            start=start,
+                            end=end,
+                            ambiguous=ambiguous,
+                        )
+                    )
 
-    use_model = settings.qwen_guard_enabled
-    model = tokenizer = device = None
-
-    # 尝试加载模型
-    if use_model:
-        try:
-            model, tokenizer = _load_model(settings)
-            device = settings.qwen_guard_device
-            if device == "auto":
-                import torch
-                device = "cuda" if torch.cuda.is_available() else "cpu"
-        except Exception as e:
-            logger.warning(
-                "无法加载 Qwen3Guard (%s)；回退到 Mock 分类器", e
-            )
-            use_model = False
-
-    results: list[SafetyResult] = []
-    for pr in privacy_results:
-        # 优先使用脱敏后文本，若为空则使用原文
-        text = pr.redacted_text or pr.original_text
-
-        # 执行分类
-        if use_model and model is not None:
-            safety_level, categories, raw = _classify_text(
-                text, model, tokenizer, device
-            )
-        else:
-            safety_level, categories, raw = _mock_classify(text)
-
-        # 计算安全评分：Safe=1.0, Controversial=0.5, Unsafe=0.0
-        score = 1.0 if safety_level == SafetyLevel.SAFE else (
-            0.5 if safety_level == SafetyLevel.CONTROVERSIAL else 0.0
+        findings = _deduplicate(findings)
+        risk_score = max(
+            (SEVERITY_WEIGHTS[finding.severity] * finding.confidence for finding in findings),
+            default=0.0,
         )
+
+        needs_adjudication = any(finding.needs_adjudication for finding in findings)
+        if findings and settings.safety_hard_case_score_floor <= risk_score <= settings.safety_hard_case_score_ceiling:
+            needs_adjudication = True
+            if "score_band_uncertain" not in hard_case_reasons:
+                hard_case_reasons.append("score_band_uncertain")
+
+        if not findings:
+            status = DetectionStatus.CLEAR
+            summary = "No content safety issues detected."
+        elif needs_adjudication:
+            status = DetectionStatus.HARD_CASE
+            summary = f"{len(findings)} content safety findings require hard-case adjudication."
+        else:
+            status = DetectionStatus.FLAGGED
+            summary = f"{len(findings)} content safety findings detected."
 
         results.append(
-            SafetyResult(
-                doc_id=pr.doc_id,
-                safety_level=safety_level,
-                harm_categories=categories,
-                raw_output=raw[:500],  # 截断模型输出
-                score=score,
+            ContentSafetyResult(
+                run_id=unit.run_id,
+                doc_id=unit.doc_id,
+                text_hash=unit.text_hash,
+                status=status,
+                risk_score=round(risk_score, 4),
+                summary=summary,
+                findings=findings,
+                needs_adjudication=needs_adjudication,
+                hard_case_reasons=hard_case_reasons,
+                provider_name=provider_name,
+                provider_version=settings.qwen3guard_model_name if provider_name.startswith("qwen3guard") else "builtin-2026.04",
+                is_degraded=is_degraded,
             )
         )
 
-        # 仅对非安全文档输出日志
-        if safety_level != SafetyLevel.SAFE:
-            logger.debug(
-                "文档 %s: safety=%s, categories=%s",
-                pr.doc_id, safety_level.value, categories,
-            )
-
-    # 输出统计
-    unsafe_count = sum(1 for r in results if r.safety_level == SafetyLevel.UNSAFE)
-    controv_count = sum(1 for r in results if r.safety_level == SafetyLevel.CONTROVERSIAL)
-    logger.info(
-        "安全审核完成: %d 个文档（%d 不安全，%d 争议）",
-        len(results), unsafe_count, controv_count,
-    )
+    logger.info("Content safety detection completed: %d documents", len(results))
     return results

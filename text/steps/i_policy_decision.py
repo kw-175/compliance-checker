@@ -1,327 +1,174 @@
-# ──────────────────────────────────────────────────────────────
-# 步骤 I – 策略决策 (Policy Decision)
-# ──────────────────────────────────────────────────────────────
-#
-# 功能：
-#   基于步骤 H 聚合的证据包进行最终的合规决策。
-#   支持两种决策引擎：
-#
-# 1. OPA (Open Policy Agent) REST API（主路径）：
-#    - 将证据包发送至 OPA 的 /v1/data/compliance/decision 端点
-#    - OPA 使用 Rego 策略文件（policies/compliance.rego）进行评估
-#    - 返回结构化的决策结果
-#
-# 2. 本地 Python 规则引擎（Fallback）：
-#    - 五维评分体系：
-#      · secrets（密钥泄露）: 有泄露=0, 无=1
-#      · safety（内容安全）: unsafe=0, controversial=0.5, safe=1
-#      · privacy（隐私）: PII>5=0.3, PII>0=0.7, 无=1
-#      · compliance（许可证）: copyleft=0.2, 正常=1
-#      · text_scan（文本扫描）: 命中>20=0.2, 命中>5=0.6, 正常=1
-#    - 决策映射：min_score<=0→REJECT, <=0.3→QUARANTINE,
-#                            <=0.6→REVIEW, >0.6→ALLOW
-#
-# 在流水线中的位置：
-#   H(证据聚合) → I(本步骤) → J(血缘审计)
-#
-# 输出产物：
-#   decision.json
-# ──────────────────────────────────────────────────────────────
-
-"""
-步骤 I – 策略决策。
-
-主路径：OPA REST API
-Fallback：本地 Python 规则引擎（五维评分）
-
-输出 → decision.json
-"""
-
 from __future__ import annotations
 
 import logging
-from typing import Any
 
-from text.config.settings import Settings
+from common.enums import TrustLevel, UnifiedDecision
+from text.config.settings import Settings, get_settings
 from text.models.schemas import (
-    Decision,
-    DocumentDecision,
-    DocumentEvidence,
-    EvidenceBundle,
-    PolicyDecision,
-    SafetyLevel,
+    DispositionLevel,
+    EvidenceEvent,
+    HardCaseAdjudicationResult,
+    IngestUnit,
+    PolicyDecisionRecord,
+    RedactionTarget,
 )
 
 logger = logging.getLogger(__name__)
 
+DISPOSITION_PRIORITY = {
+    DispositionLevel.P0: 0,
+    DispositionLevel.P1: 1,
+    DispositionLevel.P2: 2,
+    DispositionLevel.P3: 3,
+    DispositionLevel.P4: 4,
+    DispositionLevel.P5: 5,
+}
+DISPOSITION_RISK = {
+    DispositionLevel.P0: 0.05,
+    DispositionLevel.P1: 0.30,
+    DispositionLevel.P2: 0.55,
+    DispositionLevel.P3: 0.72,
+    DispositionLevel.P4: 0.92,
+    DispositionLevel.P5: 1.00,
+}
+DISPOSITION_TO_DECISION = {
+    DispositionLevel.P0: UnifiedDecision.ALLOW,
+    DispositionLevel.P1: UnifiedDecision.ALLOW,
+    DispositionLevel.P2: UnifiedDecision.QUARANTINE,
+    DispositionLevel.P3: UnifiedDecision.REVIEW,
+    DispositionLevel.P4: UnifiedDecision.REJECT,
+    DispositionLevel.P5: UnifiedDecision.REJECT,
+}
 
-# ────────────────────────────────────────────────────────────
-# OPA REST API 调用
-# ────────────────────────────────────────────────────────────
 
-def _query_opa(
-    evidence_bundle: EvidenceBundle,
-    settings: Settings,
-) -> PolicyDecision | None:
-    """
-    将证据包发送至 OPA 进行策略评估。
+def _max_disposition(current: DispositionLevel, candidate: DispositionLevel) -> DispositionLevel:
+    if DISPOSITION_PRIORITY[candidate] > DISPOSITION_PRIORITY[current]:
+        return candidate
+    return current
 
-    构造 OPA 标准输入格式（input.documents），POST 到 OPA REST API，
-    解析响应中的决策结果。
 
-    Args:
-        evidence_bundle: 证据包
-        settings: 配置对象（包含 OPA URL 和策略路径）
+def _event_floor(event: EvidenceEvent) -> DispositionLevel:
+    if event.category == "content_safety":
+        if event.disputed:
+            return DispositionLevel.P3
+        if event.severity.value == "critical":
+            return DispositionLevel.P4
+        if event.severity.value == "high":
+            return DispositionLevel.P4
+        if event.severity.value == "medium":
+            return DispositionLevel.P3
+        return DispositionLevel.P1
 
-    Returns:
-        PolicyDecision 或 None（OPA 不可用时）
-    """
-    try:
-        import httpx
-    except ImportError:
-        logger.warning("httpx 未安装；无法调用 OPA")
-        return None
+    if event.risk_type == "combined_identity":
+        return DispositionLevel.P3 if event.disputed else DispositionLevel.P2
+    if event.risk_type in {"id_card", "bank_card"}:
+        return DispositionLevel.P2
+    if event.risk_type in {"address", "student_id", "parent_contact"}:
+        return DispositionLevel.P2 if event.disputed else DispositionLevel.P1
+    return DispositionLevel.P1
 
-    # 构造 OPA API URL
-    url = f"{settings.opa_url}/{settings.opa_policy_path}"
 
-    # 构造 OPA 输入 payload
-    # OPA 要求输入放在 "input" 字段中
-    payload = {
-        "input": {
-            "pipeline_run_id": evidence_bundle.pipeline_run_id,
-            "summary": evidence_bundle.summary,
-            "documents": [
-                {
-                    "doc_id": doc.doc_id,
-                    "source_id": doc.source_id,
-                    "is_duplicate": doc.is_duplicate,
-                    "secret_count": len(doc.secret_hits),
-                    "compliance_count": len(doc.compliance_hits),
-                    "keyword_count": len(doc.keyword_hits),
-                    "regex_count": len(doc.regex_hits),
-                    "pii_count": doc.privacy.pii_count if doc.privacy else 0,
-                    "safety_level": doc.safety.safety_level.value if doc.safety else "safe",
-                    "harm_categories": doc.safety.harm_categories if doc.safety else [],
-                }
-                for doc in evidence_bundle.documents
-            ],
-        }
-    }
-
-    try:
-        resp = httpx.post(url, json=payload, timeout=30)
-        resp.raise_for_status()
-        result = resp.json().get("result", {})
-
-        # 解析 OPA 响应为 PolicyDecision
-        doc_decisions = []
-        for dd in result.get("document_decisions", []):
-            doc_decisions.append(
-                DocumentDecision(
-                    doc_id=dd.get("doc_id", ""),
-                    decision=Decision(dd.get("decision", "review")),
-                    reasons=dd.get("reasons", []),
-                    scores=dd.get("scores", {}),
-                )
+def _build_redaction_targets(events: list[EvidenceEvent]) -> list[RedactionTarget]:
+    targets: list[RedactionTarget] = []
+    for event in events:
+        if event.category != "privacy" or event.primary_span is None:
+            continue
+        targets.append(
+            RedactionTarget(
+                finding_id=event.finding_refs[0] if event.finding_refs else "",
+                event_id=event.event_id,
+                start=event.primary_span.start,
+                end=event.primary_span.end,
+                original_text=event.primary_span.text,
+                replacement=event.remediation_suggestion or "<REDACTED>",
+                pii_type=event.risk_type,
             )
-
-        return PolicyDecision(
-            pipeline_run_id=evidence_bundle.pipeline_run_id,
-            overall_decision=Decision(result.get("overall_decision", "review")),
-            document_decisions=doc_decisions,
         )
-    except Exception as e:
-        logger.warning("OPA 查询失败: %s", e)
-        return None
+    return targets
 
 
-# ────────────────────────────────────────────────────────────
-# 本地规则引擎 fallback
-# 五维评分体系 + 阈值决策
-# ────────────────────────────────────────────────────────────
-
-def _evaluate_document(doc: DocumentEvidence) -> DocumentDecision:
-    """
-    使用本地规则对单个文档的证据进行评估。
-
-    五维评分：
-    - secrets:    有密钥泄露=0, 无=1
-    - safety:     UNSAFE=0, CONTROVERSIAL=0.5, SAFE=1
-    - privacy:    PII>5=0.3, PII>0=0.7, 无=1
-    - compliance: copyleft 许可证=0.2, 正常=1
-    - text_scan:  命中>20=0.2, 命中>5=0.6, 正常=1
-
-    决策逻辑（取最低分）：
-    - min ≤ 0.0 → REJECT（拒绝）
-    - min ≤ 0.3 → QUARANTINE（隔离）
-    - min ≤ 0.6 → REVIEW（人工审核）
-    - min > 0.6 → ALLOW（允许）
-
-    Args:
-        doc: 单文档证据
-
-    Returns:
-        DocumentDecision 决策对象
-    """
-    reasons: list[str] = []
-    scores: dict[str, float] = {}
-
-    # ── 维度 1：密钥泄露 ─────────────────────────────────
-    secret_count = len(doc.secret_hits)
-    if secret_count > 0:
-        reasons.append(f"发现 {secret_count} 个泄露密钥")
-        scores["secrets"] = 0.0  # 有泄露直接 0 分 → REJECT
-    else:
-        scores["secrets"] = 1.0
-
-    # ── 维度 2：内容安全 ─────────────────────────────────
-    safety_score = 1.0
-    if doc.safety:
-        if doc.safety.safety_level == SafetyLevel.UNSAFE:
-            reasons.append(f"内容被分类为 UNSAFE ({doc.safety.harm_categories})")
-            safety_score = 0.0
-        elif doc.safety.safety_level == SafetyLevel.CONTROVERSIAL:
-            reasons.append(f"内容被分类为 CONTROVERSIAL ({doc.safety.harm_categories})")
-            safety_score = 0.5
-    scores["safety"] = safety_score
-
-    # ── 维度 3：隐私 (PII) ───────────────────────────────
-    pii_score = 1.0
-    if doc.privacy and doc.privacy.pii_count > 5:
-        reasons.append(f"PII 密度过高: {doc.privacy.pii_count} 个实体")
-        pii_score = 0.3
-    elif doc.privacy and doc.privacy.pii_count > 0:
-        pii_score = 0.7
-    scores["privacy"] = pii_score
-
-    # ── 维度 4：许可证合规 ───────────────────────────────
-    compliance_score = 1.0
-    copyleft_count = 0
-    for ch in doc.compliance_hits:
-        for lic in ch.licenses:
-            expr_lower = lic.license_expression.lower()
-            # 检测 copyleft 风格许可证（GPL、AGPL 等）
-            if any(k in expr_lower for k in ["gpl", "agpl", "copyleft"]):
-                copyleft_count += 1
-    if copyleft_count > 0:
-        reasons.append(f"发现 {copyleft_count} 个 copyleft 许可证")
-        compliance_score = 0.2
-    scores["compliance"] = compliance_score
-
-    # ── 维度 5：文本扫描命中 ─────────────────────────────
-    text_scan_score = 1.0
-    total_text_hits = len(doc.keyword_hits) + len(doc.regex_hits)
-    if total_text_hits > 20:
-        reasons.append(f"{total_text_hits} 个关键词/正则命中（高密度）")
-        text_scan_score = 0.2
-    elif total_text_hits > 5:
-        reasons.append(f"{total_text_hits} 个关键词/正则命中")
-        text_scan_score = 0.6
-    scores["text_scan"] = text_scan_score
-
-    # ── 决策逻辑：取所有维度的最低分 ────────────────────
-    min_score = min(scores.values()) if scores else 1.0
-
-    if min_score <= 0.0:
-        decision = Decision.REJECT       # 存在严重风险
-    elif min_score <= 0.3:
-        decision = Decision.QUARANTINE   # 需要隔离审查
-    elif min_score <= 0.6:
-        decision = Decision.REVIEW       # 需要人工审核
-    else:
-        decision = Decision.ALLOW        # 合规通过
-
-    return DocumentDecision(
-        doc_id=doc.doc_id,
-        decision=decision,
-        reasons=reasons,
-        scores=scores,
-    )
+def _priority_for(disposition: DispositionLevel) -> str:
+    if disposition in {DispositionLevel.P4, DispositionLevel.P5}:
+        return "critical"
+    if disposition == DispositionLevel.P3:
+        return "high"
+    if disposition == DispositionLevel.P2:
+        return "normal"
+    return "low"
 
 
-def _local_evaluate(evidence_bundle: EvidenceBundle) -> PolicyDecision:
-    """
-    使用本地规则引擎评估所有文档。
+def _actions_for(disposition: DispositionLevel, has_redactions: bool) -> tuple[list[str], str, str]:
+    if disposition == DispositionLevel.P0:
+        return ["release"], "none", ""
+    if disposition == DispositionLevel.P1:
+        return ["apply_redaction", "release"], "structured_masking", ""
+    if disposition == DispositionLevel.P2:
+        return ["apply_redaction", "restrict_internal_access", "hold_external_delivery"], "structured_masking", ""
+    if disposition == DispositionLevel.P3:
+        return ["manual_review_required", "hold_delivery"], "manual_redaction_plan", "hard_case_or_boundary_risk"
+    if disposition == DispositionLevel.P4:
+        return ["block_delivery", "escalate_compliance"], "block", "high_risk_content_or_sensitive_data"
+    return ["block_delivery", "traceback_and_incident_response"], "block_and_traceback", "circulated_high_risk_data"
 
-    总体决策取所有文档中最严格（最差）的决策。
-    优先级：REJECT > QUARANTINE > REVIEW > ALLOW
-
-    Args:
-        evidence_bundle: 证据包
-
-    Returns:
-        PolicyDecision 包含总体决策和各文档决策
-    """
-    doc_decisions = [_evaluate_document(doc) for doc in evidence_bundle.documents]
-
-    # 总体决策 = 所有文档中最严格的决策
-    priority = {
-        Decision.REJECT: 0,      # 最严格
-        Decision.QUARANTINE: 1,
-        Decision.REVIEW: 2,
-        Decision.ALLOW: 3,       # 最宽松
-    }
-    if doc_decisions:
-        worst = min(doc_decisions, key=lambda d: priority[d.decision])
-        overall = worst.decision
-    else:
-        overall = Decision.ALLOW  # 无文档时默认允许
-
-    return PolicyDecision(
-        pipeline_run_id=evidence_bundle.pipeline_run_id,
-        overall_decision=overall,
-        document_decisions=doc_decisions,
-    )
-
-
-# ────────────────────────────────────────────────────────────
-# 公共 API
-# ────────────────────────────────────────────────────────────
 
 def run(
-    evidence_bundle: EvidenceBundle,
+    ingest_units: list[IngestUnit],
+    events: list[EvidenceEvent],
+    adjudications: list[HardCaseAdjudicationResult],
     settings: Settings | None = None,
-) -> PolicyDecision:
-    """
-    执行策略决策。
+) -> list[PolicyDecisionRecord]:
+    settings = settings or get_settings()
+    events_by_doc: dict[str, list[EvidenceEvent]] = {}
+    for event in events:
+        events_by_doc.setdefault(event.doc_id, []).append(event)
+    adjudication_by_doc = {item.doc_id: item for item in adjudications}
 
-    优先使用 OPA REST API，若不可用或 OPA 被禁用，
-    则回退到本地 Python 规则引擎。
+    decisions: list[PolicyDecisionRecord] = []
+    for unit in ingest_units:
+        doc_events = events_by_doc.get(unit.doc_id, [])
+        disposition = DispositionLevel.P0
+        reason_codes: list[str] = []
 
-    Args:
-        evidence_bundle: 证据包（步骤 H 输出）
-        settings: 配置对象（可选）
+        for event in doc_events:
+            disposition = _max_disposition(disposition, _event_floor(event))
+            reason_codes.append(event.policy_tag)
 
-    Returns:
-        PolicyDecision 包含最终的合规决策
-    """
-    if settings is None:
-        from text.config.settings import get_settings
-        settings = get_settings()
+        adjudication = adjudication_by_doc.get(unit.doc_id)
+        if adjudication:
+            disposition = _max_disposition(disposition, adjudication.judgement.recommended_disposition)
+            reason_codes.append(f"hard_case:{adjudication.provider_name}")
 
-    # 尝试 OPA
-    if settings.opa_enabled:
-        opa_result = _query_opa(evidence_bundle, settings)
-        if opa_result is not None:
-            logger.info(
-                "OPA 决策: %s（%d 个文档决策）",
-                opa_result.overall_decision.value,
-                len(opa_result.document_decisions),
+        circulation_state = str(unit.metadata.get("circulation_status", "")).lower()
+        already_released = bool(unit.metadata.get("already_released")) or circulation_state in {"released", "published", "circulated"}
+        if already_released and disposition == DispositionLevel.P4:
+            disposition = DispositionLevel.P5
+
+        redaction_targets = _build_redaction_targets(doc_events)
+        required_actions, redaction_method, blocked_reason = _actions_for(
+            disposition,
+            has_redactions=bool(redaction_targets),
+        )
+        trust_level = TrustLevel.DEGRADED if adjudication and adjudication.is_degraded else TrustLevel.FULL
+
+        decisions.append(
+            PolicyDecisionRecord(
+                run_id=unit.run_id,
+                doc_id=unit.doc_id,
+                disposition_level=disposition,
+                unified_decision=DISPOSITION_TO_DECISION[disposition],
+                risk_score=DISPOSITION_RISK[disposition],
+                required_actions=required_actions,
+                redaction_targets=redaction_targets,
+                redaction_method=redaction_method,
+                blocked_reason=blocked_reason,
+                review_priority=_priority_for(disposition),
+                reason_codes=sorted(set(reason_codes)),
+                evidence_event_ids=[event.event_id for event in doc_events],
+                summary=f"{disposition.value} decision derived from {len(doc_events)} evidence events.",
+                policy_version=settings.policy_version,
+                trust_level=trust_level,
             )
-            return opa_result
-        logger.info("OPA 不可用；回退到本地规则引擎")
+        )
 
-    # Fallback 到本地规则引擎
-    result = _local_evaluate(evidence_bundle)
-
-    # 统计各决策的分布
-    decision_counts: dict[str, int] = {}
-    for dd in result.document_decisions:
-        decision_counts[dd.decision.value] = decision_counts.get(dd.decision.value, 0) + 1
-
-    logger.info(
-        "策略决策（本地引擎）: 总体=%s, 分布=%s",
-        result.overall_decision.value, decision_counts,
-    )
-    return result
+    logger.info("Policy decision completed: %d documents", len(decisions))
+    return decisions
