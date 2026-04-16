@@ -12,7 +12,14 @@ from text.models.schemas import (
     DispositionLevel,
     RunSummaryRecord,
 )
-from text.steps import a_source_intake, f_privacy_detection, g_safety_moderation, h_evidence_aggregation, i_policy_decision
+from text.steps import (
+    a_source_intake,
+    f_privacy_detection,
+    g_safety_moderation,
+    h_evidence_aggregation,
+    i_policy_decision,
+    span_conflict_resolution,
+)
 from text.steps.delivery_audit import run as delivery_audit_run
 from text.steps.hard_case_adjudication import run as hard_case_adjudication_run
 
@@ -41,6 +48,7 @@ class CompliancePipeline:
             "intake": self.output_dir / "01_intake.jsonl",
             "content_safety": self.output_dir / "02_content_safety.jsonl",
             "privacy": self.output_dir / "03_privacy_detection.jsonl",
+            "redaction_plan": self.output_dir / "03b_span_conflict_resolution.jsonl",
             "hard_case": self.output_dir / "04_hard_case_adjudication.jsonl",
             "evidence": self.output_dir / "05_evidence_events.jsonl",
             "policy": self.output_dir / "06_policy_decisions.jsonl",
@@ -60,19 +68,23 @@ class CompliancePipeline:
         privacy_results = f_privacy_detection.run(ingest_units, self.settings)
         write_jsonl(privacy_results, artifact_paths["privacy"])
 
+        redaction_plans = span_conflict_resolution.run(ingest_units, privacy_results)
+        write_jsonl(redaction_plans, artifact_paths["redaction_plan"])
+
         adjudications = hard_case_adjudication_run(ingest_units, safety_results, privacy_results, self.settings)
         write_jsonl(adjudications, artifact_paths["hard_case"])
 
         evidence_events = h_evidence_aggregation.run(ingest_units, safety_results, privacy_results, adjudications)
         write_jsonl(evidence_events, artifact_paths["evidence"])
 
-        decisions = i_policy_decision.run(ingest_units, evidence_events, adjudications, self.settings)
+        decisions = i_policy_decision.run(ingest_units, evidence_events, adjudications, self.settings, redaction_plans)
         write_jsonl(decisions, artifact_paths["policy"])
 
         annotation_records, audit_records = delivery_audit_run(
             ingest_units,
             safety_results,
             privacy_results,
+            redaction_plans,
             adjudications,
             evidence_events,
             decisions,

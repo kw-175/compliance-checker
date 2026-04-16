@@ -11,6 +11,7 @@ from text.models.schemas import (
     IngestUnit,
     PolicyDecisionRecord,
     RedactionTarget,
+    SpanConflictResolutionResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,27 @@ def _build_redaction_targets(events: list[EvidenceEvent]) -> list[RedactionTarge
     return targets
 
 
+def _build_redaction_targets_from_plan(
+    plan: SpanConflictResolutionResult,
+    events: list[EvidenceEvent],
+) -> list[RedactionTarget]:
+    event_id_by_finding_id: dict[str, str] = {}
+    for event in events:
+        for finding_id in event.finding_refs:
+            event_id_by_finding_id.setdefault(finding_id, event.event_id)
+
+    targets: list[RedactionTarget] = []
+    for target in plan.redaction_targets:
+        targets.append(
+            target.model_copy(
+                update={
+                    "event_id": event_id_by_finding_id.get(target.finding_id, target.event_id),
+                }
+            )
+        )
+    return targets
+
+
 def _priority_for(disposition: DispositionLevel) -> str:
     if disposition in {DispositionLevel.P4, DispositionLevel.P5}:
         return "critical"
@@ -116,12 +138,14 @@ def run(
     events: list[EvidenceEvent],
     adjudications: list[HardCaseAdjudicationResult],
     settings: Settings | None = None,
+    redaction_plans: list[SpanConflictResolutionResult] | None = None,
 ) -> list[PolicyDecisionRecord]:
     settings = settings or get_settings()
     events_by_doc: dict[str, list[EvidenceEvent]] = {}
     for event in events:
         events_by_doc.setdefault(event.doc_id, []).append(event)
     adjudication_by_doc = {item.doc_id: item for item in adjudications}
+    redaction_plan_by_doc = {item.doc_id: item for item in redaction_plans or []}
 
     decisions: list[PolicyDecisionRecord] = []
     for unit in ingest_units:
@@ -143,7 +167,12 @@ def run(
         if already_released and disposition == DispositionLevel.P4:
             disposition = DispositionLevel.P5
 
-        redaction_targets = _build_redaction_targets(doc_events)
+        redaction_plan = redaction_plan_by_doc.get(unit.doc_id)
+        redaction_targets = (
+            _build_redaction_targets_from_plan(redaction_plan, doc_events)
+            if redaction_plan is not None
+            else _build_redaction_targets(doc_events)
+        )
         required_actions, redaction_method, blocked_reason = _actions_for(
             disposition,
             has_redactions=bool(redaction_targets),

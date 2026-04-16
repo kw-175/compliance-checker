@@ -14,6 +14,7 @@ from text.models.schemas import (
     IngestUnit,
     PolicyDecisionRecord,
     PrivacyDetectionResult,
+    SpanConflictResolutionResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,12 +39,14 @@ def run(
     ingest_units: list[IngestUnit],
     safety_results: list[ContentSafetyResult],
     privacy_results: list[PrivacyDetectionResult],
+    redaction_plans: list[SpanConflictResolutionResult],
     adjudications: list[HardCaseAdjudicationResult],
     events: list[EvidenceEvent],
     decisions: list[PolicyDecisionRecord],
 ) -> tuple[list[AnnotationPackageRecord], list[AuditPackageRecord]]:
     safety_by_doc = {result.doc_id: result for result in safety_results}
     privacy_by_doc = {result.doc_id: result for result in privacy_results}
+    redaction_plan_by_doc = {result.doc_id: result for result in redaction_plans}
     adjudication_by_doc = {result.doc_id: result for result in adjudications}
     events_by_doc: dict[str, list[EvidenceEvent]] = {}
     for event in events:
@@ -59,6 +62,7 @@ def run(
         redacted_view = _apply_redactions(unit.text, decision)
         doc_events = events_by_doc.get(unit.doc_id, [])
         adjudication = adjudication_by_doc.get(unit.doc_id)
+        redaction_plan = redaction_plan_by_doc.get(unit.doc_id)
         degrade_reasons = list(adjudication.notes) if adjudication and adjudication.is_degraded else []
 
         annotation_records.append(
@@ -79,6 +83,8 @@ def run(
                     "tenant_id": unit.tenant_id,
                     "profile_id": unit.profile_id,
                     "source_path": unit.source_path,
+                    "redaction_plan_provider": redaction_plan.provider_name if redaction_plan else "",
+                    "redaction_conflict_count": len(redaction_plan.conflicts) if redaction_plan else 0,
                 },
             )
         )
@@ -90,12 +96,14 @@ def run(
                 ingest_unit=unit,
                 safety_result=safety_by_doc.get(unit.doc_id),
                 privacy_result=privacy_by_doc.get(unit.doc_id),
+                redaction_plan=redaction_plan,
                 hard_case_result=adjudication,
                 evidence_events=doc_events,
                 decision=decision,
                 provider_manifest={
                     "content_safety": safety_by_doc.get(unit.doc_id).provider_name if safety_by_doc.get(unit.doc_id) else "",
                     "privacy": privacy_by_doc.get(unit.doc_id).provider_name if privacy_by_doc.get(unit.doc_id) else "",
+                    "redaction_plan": redaction_plan.provider_name if redaction_plan else "",
                     "hard_case": adjudication.provider_name if adjudication else "",
                 },
                 trust_level=TrustLevel.DEGRADED if degrade_reasons else decision.trust_level,

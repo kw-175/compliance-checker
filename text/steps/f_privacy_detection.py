@@ -100,18 +100,36 @@ PRESIDIO_ENTITY_MAP = {
     "EMAIL_ADDRESS": ("email", "pii.email", Severity.LOW, "<EMAIL>"),
     "PHONE_NUMBER": ("phone", "pii.phone", Severity.MEDIUM, "<PHONE>"),
     "PERSON": ("person_name", "pii.person_name", Severity.LOW, "<PERSON>"),
+    "ORGANIZATION": ("organization", "pii.organization", Severity.LOW, "<ORGANIZATION>"),
     "LOCATION": ("address", "pii.address", Severity.MEDIUM, "<ADDRESS>"),
     "CREDIT_CARD": ("bank_card", "pii.bank_card", Severity.HIGH, "<BANK_CARD>"),
     "CRYPTO": ("crypto_wallet", "pii.crypto_wallet", Severity.HIGH, "<CRYPTO_WALLET>"),
     "IBAN_CODE": ("bank_account", "pii.bank_account", Severity.HIGH, "<BANK_ACCOUNT>"),
+    "BANK_ACCOUNT": ("bank_account", "pii.bank_account", Severity.HIGH, "<BANK_ACCOUNT>"),
     "IP_ADDRESS": ("ip_address", "pii.ip_address", Severity.LOW, "<IP_ADDRESS>"),
     "URL": ("url", "pii.url", Severity.LOW, "<URL>"),
+    "ID_CARD": ("id_card", "pii.id_card", Severity.HIGH, "<ID_CARD>"),
+    "PASSPORT": ("id_card", "pii.id_card", Severity.HIGH, "<ID_CARD>"),
+    "DRIVER_LICENSE": ("id_card", "pii.id_card", Severity.HIGH, "<ID_CARD>"),
     "US_SSN": ("id_card", "pii.id_card", Severity.HIGH, "<ID_CARD>"),
     "US_DRIVER_LICENSE": ("id_card", "pii.id_card", Severity.HIGH, "<ID_CARD>"),
     "US_PASSPORT": ("id_card", "pii.id_card", Severity.HIGH, "<ID_CARD>"),
     "CN_ID_CARD": ("id_card", "pii.id_card", Severity.HIGH, "<ID_CARD>"),
     "CN_PHONE_NUMBER": ("phone", "pii.phone", Severity.MEDIUM, "<PHONE>"),
     "STUDENT_ID": ("student_id", "pii.student_id", Severity.MEDIUM, "<STUDENT_ID>"),
+    "PARENT_CONTACT": ("parent_contact", "pii.parent_contact", Severity.HIGH, "<PARENT_CONTACT>"),
+    "EDUCATION_RECORD": ("education_record", "pii.education_record", Severity.MEDIUM, "<EDU_RECORD>"),
+    "WECHAT_ID": ("social_account", "pii.social_account.wechat", Severity.MEDIUM, "<WECHAT_ID>"),
+    "QQ_NUMBER": ("social_account", "pii.social_account.qq", Severity.MEDIUM, "<QQ_NUMBER>"),
+    "ALIPAY_ID": ("payment_account", "pii.payment_account.alipay", Severity.HIGH, "<ALIPAY_ID>"),
+    "LICENSE_PLATE": ("vehicle_identifier", "pii.vehicle.license_plate", Severity.MEDIUM, "<LICENSE_PLATE>"),
+}
+
+COMBINATION_RISK_ALIASES = {
+    "phone": "phone_number",
+    "bank_account": "bank_card",
+    "social_account": "parent_contact",
+    "payment_account": "bank_card",
 }
 
 
@@ -145,18 +163,27 @@ def _call_presidio_analyzer(unit: IngestUnit, settings: Settings) -> tuple[list[
 
 
 def _presidio_language_for(unit: IngestUnit, settings: Settings) -> str:
-    configured = settings.presidio_language.strip().lower()
+    def normalize(language: str) -> str:
+        normalized = (language or "").strip().lower().replace("_", "-")
+        if normalized in {"zh", "zh-cn", "zh-hans", "chinese", "cn"}:
+            return "zh"
+        if normalized in {"en", "en-us", "en-gb", "english"}:
+            return "en"
+        return normalized
+
+    configured = normalize(getattr(settings, "presidio_language", "auto"))
+    supported_raw = getattr(settings, "presidio_supported_languages", "en,zh")
     supported = {
-        item.strip().lower()
-        for item in settings.presidio_supported_languages.split(",")
+        normalize(item)
+        for item in supported_raw.split(",")
         if item.strip()
     }
-    fallback = settings.presidio_language_fallback.strip().lower() or "en"
+    fallback = normalize(getattr(settings, "presidio_language_fallback", "en")) or "en"
 
     if configured and configured != "auto":
         return configured if configured in supported else fallback
 
-    inferred = (unit.language or "").strip().lower()
+    inferred = normalize(unit.language or "")
     return inferred if inferred in supported else fallback
 
 
@@ -180,7 +207,18 @@ def _presidio_finding(unit: IngestUnit, item: dict[str, Any], settings: Settings
         entity_type,
         ("pii_entity", f"pii.presidio.{entity_type.lower() or 'unknown'}", Severity.MEDIUM, "<PII>"),
     )
-    needs_adjudication = risk_type in {"person_name", "address", "bank_card", "id_card"}
+    needs_adjudication = risk_type in {
+        "person_name",
+        "address",
+        "bank_card",
+        "bank_account",
+        "id_card",
+        "student_id",
+        "parent_contact",
+        "social_account",
+        "payment_account",
+        "vehicle_identifier",
+    }
     hard_case_reason = "context_dependent_pii" if needs_adjudication else ""
     return _build_finding(
         unit,
@@ -284,7 +322,11 @@ def run(
         combined_rule = combination_rules.get("combined_identity")
         if combined_rule:
             base_types = set(combined_rule.get("base_types", []))
-            matched_base_types = {finding.risk_type for finding in findings if finding.risk_type in base_types}
+            matched_base_types = {
+                COMBINATION_RISK_ALIASES.get(finding.risk_type, finding.risk_type)
+                for finding in findings
+                if finding.risk_type in base_types or COMBINATION_RISK_ALIASES.get(finding.risk_type) in base_types
+            }
             if len(matched_base_types) >= settings.privacy_combination_threshold:
                 severity = Severity(combined_rule["severity"])
                 needs_adjudication = True

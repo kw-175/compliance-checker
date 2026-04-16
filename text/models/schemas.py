@@ -189,6 +189,35 @@ class RedactionTarget(BaseModel):
     pii_type: str = ""
 
 
+class RedactionConflict(BaseModel):
+    conflict_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    conflict_type: str = "overlap"
+    start: int
+    end: int
+    text: str = ""
+    selected_finding_id: str = ""
+    selected_risk_type: str = ""
+    suppressed_finding_ids: list[str] = Field(default_factory=list)
+    suppressed_risk_types: list[str] = Field(default_factory=list)
+    resolution_source: str = "deterministic_priority"
+    rationale: str = ""
+
+
+class SpanConflictResolutionResult(ArtifactRecord):
+    doc_id: str
+    text_hash: str
+    input_finding_count: int = 0
+    selected_span_count: int = 0
+    suppressed_finding_count: int = 0
+    redaction_targets: list[RedactionTarget] = Field(default_factory=list)
+    conflicts: list[RedactionConflict] = Field(default_factory=list)
+    needs_model_resolution: bool = False
+    is_degraded: bool = False
+    provider_name: str = "deterministic_span_conflict_resolver"
+    provider_version: str = "builtin-2026.04"
+    summary: str = ""
+
+
 class PolicyDecisionRecord(ArtifactRecord):
     decision_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     doc_id: str
@@ -228,6 +257,7 @@ class AuditPackageRecord(ArtifactRecord):
     ingest_unit: IngestUnit
     safety_result: ContentSafetyResult | None = None
     privacy_result: PrivacyDetectionResult | None = None
+    redaction_plan: SpanConflictResolutionResult | None = None
     hard_case_result: HardCaseAdjudicationResult | None = None
     evidence_events: list[EvidenceEvent] = Field(default_factory=list)
     decision: PolicyDecisionRecord
