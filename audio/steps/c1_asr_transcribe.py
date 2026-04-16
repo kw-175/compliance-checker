@@ -1,4 +1,4 @@
-﻿"""
+"""
 Step C1: ASR transcription.
 """
 
@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 from audio.config.settings import Settings
 from audio.models.schemas import ASRSegment, NormalizedAudioRecord
@@ -14,40 +15,121 @@ from audio.steps import load_jsonl
 logger = logging.getLogger(__name__)
 
 
+def _record_metadata(record: NormalizedAudioRecord) -> dict[str, Any]:
+    return record.metadata if isinstance(record.metadata, dict) else {}
+
+
+def _record_ids(record: NormalizedAudioRecord) -> set[str]:
+    metadata = _record_metadata(record)
+    return {
+        str(value).strip()
+        for value in (
+            record.source_id,
+            metadata.get("audio_id"),
+            metadata.get("upstream_source_id"),
+        )
+        if str(value or "").strip()
+    }
+
+
+def _row_ids(row: dict[str, Any]) -> set[str]:
+    return {
+        str(row.get(key)).strip()
+        for key in ("audio_id", "source_id")
+        if str(row.get(key, "")).strip()
+    }
+
+
+def _row_matches_record(
+    row: dict[str, Any],
+    record: NormalizedAudioRecord,
+    *,
+    require_identifier: bool,
+) -> bool:
+    ids = _row_ids(row)
+    if ids:
+        return bool(ids & _record_ids(record))
+    if require_identifier:
+        return False
+
+    for key in ("clean_audio_path", "normalized_path", "audio_path"):
+        raw_ref = str(row.get(key, "")).strip()
+        if raw_ref and Path(raw_ref).name == Path(record.normalized_path).name:
+            return True
+    return True
+
+
+def _candidate_transcript_paths(record: NormalizedAudioRecord) -> list[tuple[Path, bool]]:
+    metadata = _record_metadata(record)
+    paths: list[tuple[Path, bool]] = []
+
+    sidecar_paths = metadata.get("sidecar_paths")
+    if isinstance(sidecar_paths, dict) and sidecar_paths.get("transcript_segments.jsonl"):
+        paths.append((Path(str(sidecar_paths["transcript_segments.jsonl"])), True))
+    if metadata.get("transcript_segments_path"):
+        paths.append((Path(str(metadata["transcript_segments_path"])), True))
+
+    original = Path(record.original_path)
+    paths.extend(
+        [
+            (original.with_suffix(".transcript.jsonl"), False),
+            (original.with_name(f"{original.stem}_transcript.jsonl"), False),
+            (original.with_name("sample_transcript.jsonl"), False),
+        ]
+    )
+
+    unique: list[tuple[Path, bool]] = []
+    seen: set[str] = set()
+    for path, require_match in paths:
+        key = str(path.resolve()) if path.exists() else str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append((path, require_match))
+    return unique
+
+
+def _segment_payload(row: dict[str, Any], record: NormalizedAudioRecord, sidecar_path: Path) -> dict[str, Any]:
+    text = str(row.get("text") or row.get("transcript") or row.get("asr_text") or "")
+    end_time = row.get("end_time", row.get("end", record.duration_seconds))
+    payload: dict[str, Any] = {
+        "source_id": record.source_id,
+        "start_time": float(row.get("start_time", row.get("start", 0.0)) or 0.0),
+        "end_time": float(end_time or record.duration_seconds),
+        "text": text,
+        "confidence": float(row.get("confidence", row.get("score", 0.0)) or 0.0),
+        "engine_name": str(row.get("engine_name") or row.get("engine") or "sidecar"),
+        "language": str(row.get("language", "")),
+        "metadata": {
+            "sidecar_path": str(sidecar_path),
+            "sidecar_audio_id": str(row.get("audio_id", "")),
+            "sidecar_source_id": str(row.get("source_id", "")),
+            "sidecar_segment_id": str(row.get("segment_id", "")),
+            "sidecar_record": row,
+        },
+    }
+    if row.get("segment_id"):
+        payload["segment_id"] = str(row.get("segment_id"))
+    return payload
+
+
 def _load_sidecar_segments(record: NormalizedAudioRecord) -> list[ASRSegment]:
-    # 优先读取旁路转写文件，便于离线测试与无模型环境回放。
-    candidates = [
-        Path(record.original_path).with_suffix(".transcript.jsonl"),
-        Path(record.original_path).with_name(f"{Path(record.original_path).stem}_transcript.jsonl"),
-        Path(record.original_path).with_name("sample_transcript.jsonl"),
-    ]
-    for candidate in candidates:
+    for candidate, require_match in _candidate_transcript_paths(record):
         if not candidate.exists():
             continue
-        rows = load_jsonl(candidate)
         segments: list[ASRSegment] = []
-        for row in rows:
-            payload = {
-                "source_id": record.source_id,
-                "start_time": float(row.get("start_time", 0.0)),
-                "end_time": float(row.get("end_time", 0.0)),
-                "text": str(row.get("text", "")),
-                "confidence": float(row.get("confidence", 0.0)),
-                "engine_name": str(row.get("engine_name", "sidecar")),
-                "language": str(row.get("language", "")),
-                "metadata": {"sidecar_path": str(candidate)},
-            }
-            if row.get("segment_id"):
-                payload["segment_id"] = str(row.get("segment_id"))
-            segments.append(ASRSegment(**payload))
+        for row in load_jsonl(candidate):
+            if not _row_matches_record(row, record, require_identifier=require_match):
+                continue
+            payload = _segment_payload(row, record, candidate)
+            if payload["text"].strip():
+                segments.append(ASRSegment(**payload))
         if segments:
-            # 只要某个候选文件有有效片段即立即返回。
             return segments
     return []
 
 
 def _run_qwen_asr(record: NormalizedAudioRecord, settings: Settings) -> list[ASRSegment]:
-    # 主 ASR 路径：基于 transformers + Qwen ASR 模型推理。
     try:
         from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
     except ImportError as exc:
@@ -65,7 +147,6 @@ def _run_qwen_asr(record: NormalizedAudioRecord, settings: Settings) -> list[ASR
     output = asr(record.normalized_path)
     chunks = output.get("chunks") or []
     if not chunks and output.get("text"):
-        # 若模型未返回分段，退化为单段覆盖整段音频。
         chunks = [{"timestamp": (0.0, record.duration_seconds), "text": output.get("text", "")}]
     return [
         ASRSegment(
@@ -83,7 +164,6 @@ def _run_qwen_asr(record: NormalizedAudioRecord, settings: Settings) -> list[ASR
 
 
 def _run_faster_whisper(record: NormalizedAudioRecord, settings: Settings) -> list[ASRSegment]:
-    # 次级 ASR 路径：Qwen 不可用时回退到 faster-whisper。
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:
@@ -107,7 +187,6 @@ def _run_faster_whisper(record: NormalizedAudioRecord, settings: Settings) -> li
 
 
 def _fallback_segments(record: NormalizedAudioRecord) -> list[ASRSegment]:
-    # 最终兜底：旁路转写 > 占位文本，保证下游结构完整。
     sidecar = _load_sidecar_segments(record)
     if sidecar:
         return sidecar
@@ -124,15 +203,17 @@ def _fallback_segments(record: NormalizedAudioRecord) -> list[ASRSegment]:
 
 
 def run(records: list[NormalizedAudioRecord], settings: Settings) -> list[ASRSegment]:
-    # 每条音频按“Qwen -> Whisper -> Fallback”顺序尝试。
     all_segments: list[ASRSegment] = []
     for record in records:
-        segments: list[ASRSegment] = []
+        segments = _load_sidecar_segments(record)
+        if segments:
+            all_segments.extend(segments)
+            continue
+
         if settings.qwen_asr_enabled:
             try:
                 segments = _run_qwen_asr(record, settings)
             except Exception as exc:
-                # 单引擎失败只记录告警，不中断当前音频处理。
                 logger.warning("Qwen ASR failed for %s: %s", record.source_id, exc)
         if not segments and settings.faster_whisper_enabled:
             try:

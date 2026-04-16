@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 app = FastAPI(title="Qwen3Guard Adapter")
 
-VLLM_URL = os.getenv("QWEN3GUARD_VLLM_URL", "http://127.0.0.1:8100/v1/chat/completions")
+VLLM_URL = os.getenv("QWEN3GUARD_VLLM_URL", "http://127.0.0.1:8155/v1/chat/completions")
 API_KEY = os.getenv("QWEN3GUARD_API_KEY", "guard-token")
 MODEL = os.getenv("QWEN3GUARD_MODEL", "Qwen3Guard-Gen-0.6B")
 

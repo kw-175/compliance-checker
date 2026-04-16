@@ -1,157 +1,89 @@
-﻿"""
-Step I: policy decision.
+"""
+Step I: privacy and safety policy decision.
 """
 
 from __future__ import annotations
 
 import logging
+from typing import Any
 
-from audio.config.settings import Settings
+from audio.config.settings import Settings, get_settings
 from audio.models.schemas import Decision, EvidenceBundle, PolicyDecision, SafetyLevel, TranscriptEvidence, UnitDecision
 
 logger = logging.getLogger(__name__)
 
+DECISION_PRIORITY = {
+    Decision.ALLOW: 0,
+    Decision.REVIEW: 1,
+    Decision.QUARANTINE: 2,
+    Decision.REJECT: 3,
+}
 
-def _evaluate_unit(unit: TranscriptEvidence) -> UnitDecision:
-    # 对单条证据从 secrets/safety/privacy/compliance/text_scan 多维打分。
+
+def _max_decision(left: Decision, right: Decision) -> Decision:
+    return right if DECISION_PRIORITY[right] > DECISION_PRIORITY[left] else left
+
+
+def _evaluate_unit(unit: TranscriptEvidence, extension_scores: dict[str, Any] | None = None) -> UnitDecision:
     scores: dict[str, float] = {}
     reasons: list[str] = []
-
-    scores["secrets"] = 0.0 if unit.secret_hits else 1.0
-    if unit.secret_hits:
-        reasons.append(f"{len(unit.secret_hits)} secret hit(s)")
 
     if unit.safety and unit.safety.safety_level == SafetyLevel.UNSAFE:
         scores["safety"] = 0.0
         reasons.append("unsafe content")
+        decision = Decision.REJECT
     elif unit.safety and unit.safety.safety_level == SafetyLevel.CONTROVERSIAL:
         scores["safety"] = 0.5
         reasons.append("controversial content")
+        decision = Decision.REVIEW
     else:
         scores["safety"] = 1.0
+        decision = Decision.ALLOW
 
     pii_count = unit.privacy.pii_count if unit.privacy else 0
     if pii_count > 3:
         scores["privacy"] = 0.3
         reasons.append(f"high PII density ({pii_count})")
+        decision = _max_decision(decision, Decision.QUARANTINE)
     elif pii_count > 0:
         scores["privacy"] = 0.7
+        reasons.append(f"PII detected ({pii_count})")
+        decision = _max_decision(decision, Decision.REVIEW)
     else:
         scores["privacy"] = 1.0
 
-    if any(any(token in lic.license_expression.lower() for token in ["gpl", "agpl"]) for hit in unit.compliance_hits for lic in hit.licenses):
-        # copyleft 信号作为较高风险合规提示。
-        scores["compliance"] = 0.2
-        reasons.append("copyleft license signal")
-    else:
-        scores["compliance"] = 1.0
-
-    text_hits = len(unit.keyword_hits) + len(unit.regex_hits)
-    if text_hits > 10:
-        scores["text_scan"] = 0.2
-        reasons.append(f"dense rule hits ({text_hits})")
-    elif text_hits > 0:
-        scores["text_scan"] = 0.6
-    else:
-        scores["text_scan"] = 1.0
-
-    worst = min(scores.values()) if scores else 1.0
-    # 采用最差项原则得到最终 unit 级决策。
-    if worst <= 0.0:
-        decision = Decision.REJECT
-    elif worst <= 0.3:
-        decision = Decision.QUARANTINE
-    elif worst <= 0.6:
-        decision = Decision.REVIEW
-    else:
-        decision = Decision.ALLOW
+    for key, raw_score in (extension_scores or {}).items():
+        try:
+            scores[f"extension:{key}"] = float(raw_score)
+        except (TypeError, ValueError):
+            continue
 
     return UnitDecision(unit_id=unit.unit_id, decision=decision, reasons=reasons, scores=scores)
 
 
-def _local_decision(bundle: EvidenceBundle) -> PolicyDecision:
-    # 本地决策：按优先级折叠 unit 决策得到 overall。
-    decisions = [_evaluate_unit(unit) for unit in bundle.transcript_units]
-    priority = {Decision.REJECT: 0, Decision.QUARANTINE: 1, Decision.REVIEW: 2, Decision.ALLOW: 3}
-    overall = min((decision.decision for decision in decisions), key=lambda item: priority[item], default=Decision.ALLOW)
-    return PolicyDecision(pipeline_run_id=bundle.pipeline_run_id, overall_decision=overall, unit_decisions=decisions)
+def _local_decision(bundle: EvidenceBundle, extension_scores: dict[str, Any] | None = None) -> PolicyDecision:
+    decisions = [
+        _evaluate_unit(unit, extension_scores=extension_scores)
+        for unit in bundle.transcript_units
+    ]
+    overall = Decision.ALLOW
+    for decision in decisions:
+        overall = _max_decision(overall, decision.decision)
+    return PolicyDecision(
+        pipeline_run_id=bundle.pipeline_run_id,
+        overall_decision=overall,
+        unit_decisions=decisions,
+        trust_level=bundle.trust_level,
+        profile_name="audio-privacy-safety-v1",
+    )
 
 
-def _query_opa(bundle: EvidenceBundle, settings: Settings) -> PolicyDecision | None:
-    # 远程 OPA 决策：将证据包裁剪为策略输入结构后请求 OPA。
-    try:
-        import httpx
-    except ImportError:
-        logger.warning("httpx unavailable, skip OPA and fallback to local rules")
-        return None
-
-    payload = {
-        "input": {
-            "pipeline_run_id": bundle.pipeline_run_id,
-            "summary": bundle.summary,
-            "units": [
-                {
-                    "unit_id": unit.unit_id,
-                    "source_id": unit.source_id,
-                    "is_duplicate": unit.is_duplicate,
-                    "secret_count": len(unit.secret_hits),
-                    "compliance_count": len(unit.compliance_hits),
-                    "keyword_count": len(unit.keyword_hits),
-                    "regex_count": len(unit.regex_hits),
-                    "pii_count": unit.privacy.pii_count if unit.privacy else 0,
-                    "safety_level": unit.safety.safety_level.value if unit.safety else "safe",
-                }
-                for unit in bundle.transcript_units
-            ],
-        }
-    }
-
-    url = f"{settings.opa_url.rstrip('/')}/{settings.opa_policy_path.lstrip('/')}"
-    try:
-        response = httpx.post(url, json=payload, timeout=30)
-        response.raise_for_status()
-        result = response.json().get("result", {})
-
-        decisions: list[UnitDecision] = []
-        for item in result.get("unit_decisions", []):
-            raw_decision = str(item.get("decision", "review")).lower()
-            try:
-                parsed = Decision(raw_decision)
-            except ValueError:
-                parsed = Decision.REVIEW
-            decisions.append(
-                UnitDecision(
-                    unit_id=str(item.get("unit_id", "")),
-                    decision=parsed,
-                    reasons=[str(reason) for reason in item.get("reasons", [])],
-                    scores={str(key): float(value) for key, value in item.get("scores", {}).items()},
-                )
-            )
-
-        raw_overall = str(result.get("overall_decision", "review")).lower()
-        try:
-            overall = Decision(raw_overall)
-        except ValueError:
-            overall = Decision.REVIEW
-
-        return PolicyDecision(
-            pipeline_run_id=bundle.pipeline_run_id,
-            overall_decision=overall,
-            unit_decisions=decisions,
-        )
-    except Exception as exc:
-        # OPA 不可达或响应异常时，自动回退本地规则。
-        logger.warning("OPA evaluation failed, fallback to local rules: %s", exc)
-        return None
-
-
-def run(bundle: EvidenceBundle, settings: Settings | None = None) -> PolicyDecision:
-    if settings is None:
-        from audio.config.settings import get_settings
-        settings = get_settings()
-    if settings.opa_enabled:
-        # 优先尝试 OPA；失败再回退本地规则，保证稳定产出决策。
-        opa_result = _query_opa(bundle, settings)
-        if opa_result is not None:
-            return opa_result
-    return _local_decision(bundle)
+def run(
+    bundle: EvidenceBundle,
+    settings: Settings | None = None,
+    extension_scores: dict[str, Any] | None = None,
+) -> PolicyDecision:
+    settings = settings or get_settings()
+    if getattr(settings, "opa_enabled", False):
+        logger.info("OPA is configured but audio privacy/safety policy currently uses local rules.")
+    return _local_decision(bundle, extension_scores=extension_scores)

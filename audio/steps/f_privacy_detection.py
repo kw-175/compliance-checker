@@ -8,7 +8,7 @@ import logging
 import re
 
 from audio.config.settings import Settings
-from audio.models.schemas import DedupTranscriptUnit, PIIEntity, PrivacyResult, RedactionSpan
+from audio.models.schemas import DedupTranscriptUnit, PIIEntity, PrivacyResult, RedactionSpan, TranscriptUnit
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +145,7 @@ def _presidio_detect(text: str, analyzer, settings: Settings) -> list[PIIEntity]
     return entities
 
 
-def _to_time(unit: DedupTranscriptUnit, start: int, end: int) -> tuple[float, float]:
+def _to_time(unit: DedupTranscriptUnit | TranscriptUnit, start: int, end: int) -> tuple[float, float]:
     # 将文本字符偏移近似映射为音频时间区间，用于后续音频脱敏。
     if not unit.text or len(unit.text) == 0:
         return unit.start_time, unit.end_time
@@ -203,7 +203,7 @@ def _presidio_redact(text: str, entities: list[PIIEntity], anonymizer) -> str:
     return redacted.text
 
 
-def run(units: list[DedupTranscriptUnit], settings: Settings | None = None) -> tuple[list[PrivacyResult], list[RedactionSpan]]:
+def run(units: list[DedupTranscriptUnit] | list[TranscriptUnit], settings: Settings | None = None) -> tuple[list[PrivacyResult], list[RedactionSpan]]:
     if settings is None:
         from audio.config.settings import get_settings
 
@@ -222,7 +222,7 @@ def run(units: list[DedupTranscriptUnit], settings: Settings | None = None) -> t
     results: list[PrivacyResult] = []
     spans: list[RedactionSpan] = []
     for unit in units:
-        if unit.is_duplicate:
+        if getattr(unit, "is_duplicate", False):
             continue
         # 优先 Presidio；若无结果或不可用，则退化到正则检测。
         entities = _presidio_detect(unit.text, analyzer, settings) if use_presidio else _fallback_detect(unit.text)

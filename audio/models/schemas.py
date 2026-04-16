@@ -44,6 +44,12 @@ class RenderStrategy(str, Enum):
     COPY = "copy"
 
 
+class DeliveryStatus(str, Enum):
+    DELIVER = "deliver"
+    HOLD = "hold"
+    BLOCK = "block"
+
+
 class TaskStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
@@ -59,6 +65,7 @@ class SourceRecord(BaseModel):
     sha256: str = ""
     mime_type: str = ""
     created_at: datetime = Field(default_factory=_utcnow)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 # 源分类结果，补充类型与元数据。
@@ -294,6 +301,57 @@ class PolicyDecision(BaseModel):
     profile_name: str = "default"
 
 
+class AudioAnnotationRecord(BaseModel):
+    run_id: str
+    created_at: datetime = Field(default_factory=_utcnow)
+    package_record_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    unit_id: str
+    source_id: str
+    original_text: str = ""
+    redacted_view: str = ""
+    delivery_status: DeliveryStatus = DeliveryStatus.HOLD
+    decision: Decision = Decision.REVIEW
+    review_priority: str = "normal"
+    start_time: float = 0.0
+    end_time: float = 0.0
+    speaker_id: str = "speaker_0"
+    redaction_spans: list[RedactionSpan] = Field(default_factory=list)
+    annotation_hints: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AudioAuditRecord(BaseModel):
+    run_id: str
+    created_at: datetime = Field(default_factory=_utcnow)
+    audit_record_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    unit_id: str
+    source_id: str
+    transcript: TranscriptUnit
+    privacy_result: Optional[PrivacyResult] = None
+    safety_result: Optional[SafetyResult] = None
+    redaction_spans: list[RedactionSpan] = Field(default_factory=list)
+    evidence: Optional[TranscriptEvidence] = None
+    decision: Optional[UnitDecision] = None
+    provider_manifest: dict[str, str] = Field(default_factory=dict)
+    trust_level: str = "full"
+    audit_summary: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AudioRunSummaryRecord(BaseModel):
+    run_id: str
+    created_at: datetime = Field(default_factory=_utcnow)
+    summary_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    processed_units: int = 0
+    processed_sources: int = 0
+    overall_decision: Decision = Decision.ALLOW
+    counts_by_decision: dict[str, int] = Field(default_factory=dict)
+    artifact_paths: dict[str, str] = Field(default_factory=dict)
+    review_suggestions: list[str] = Field(default_factory=list)
+    explanation_summary: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 # 脱敏音频产物记录。
 class RedactedAudioRecord(BaseModel):
     source_id: str
@@ -330,5 +388,5 @@ class CheckTaskInfo(BaseModel):
     status: TaskStatus = TaskStatus.PENDING
     created_at: datetime = Field(default_factory=_utcnow)
     completed_at: Optional[datetime] = None
-    result: Optional[PolicyDecision] = None
+    result: Optional[Any] = None
     error: Optional[str] = None

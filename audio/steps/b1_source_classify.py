@@ -1,4 +1,4 @@
-﻿"""
+"""
 Step B1: source classification.
 """
 
@@ -17,7 +17,6 @@ _REPO_SUFFIXES = {
 
 
 def _classify(record: SourceRecord) -> SourceType:
-    # 先按后缀判断，再结合 MIME 类型兜底。
     path = Path(record.path)
     suffix = path.suffix.lower()
     mime = (record.mime_type or "").lower()
@@ -31,14 +30,17 @@ def _classify(record: SourceRecord) -> SourceType:
 
 
 def run(sources: list[SourceRecord]) -> list[SourceProfile]:
-    # 为每个 source 生成统一 profile，供下游步骤分流使用。
-    return [
-        SourceProfile(
-            source_id=record.source_id,
-            path=record.path,
-            source_type=_classify(record),
-            mime_type=record.mime_type,
-            metadata={"size_bytes": record.size_bytes, "sha256": record.sha256},
+    profiles: list[SourceProfile] = []
+    for record in sources:
+        metadata = dict(record.metadata or {})
+        metadata.update({"size_bytes": record.size_bytes, "sha256": record.sha256})
+        profiles.append(
+            SourceProfile(
+                source_id=record.source_id,
+                path=record.path,
+                source_type=_classify(record),
+                mime_type=record.mime_type,
+                metadata=metadata,
+            )
         )
-        for record in sources
-    ]
+    return profiles
