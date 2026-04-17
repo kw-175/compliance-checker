@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from audio.adapters import qwen_asr_adapter
 from audio.config.settings import Settings
 from audio.models.schemas import ASRSegment, NormalizedAudioRecord
 from audio.steps import load_jsonl
@@ -130,37 +131,7 @@ def _load_sidecar_segments(record: NormalizedAudioRecord) -> list[ASRSegment]:
 
 
 def _run_qwen_asr(record: NormalizedAudioRecord, settings: Settings) -> list[ASRSegment]:
-    try:
-        from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
-    except ImportError as exc:
-        raise RuntimeError("transformers unavailable for Qwen ASR") from exc
-
-    model = AutoModelForSpeechSeq2Seq.from_pretrained(settings.qwen_asr_model, trust_remote_code=True)
-    processor = AutoProcessor.from_pretrained(settings.qwen_asr_model, trust_remote_code=True)
-    asr = pipeline(
-        "automatic-speech-recognition",
-        model=model,
-        tokenizer=processor.tokenizer,
-        feature_extractor=processor.feature_extractor,
-        return_timestamps=True,
-    )
-    output = asr(record.normalized_path)
-    chunks = output.get("chunks") or []
-    if not chunks and output.get("text"):
-        chunks = [{"timestamp": (0.0, record.duration_seconds), "text": output.get("text", "")}]
-    return [
-        ASRSegment(
-            source_id=record.source_id,
-            start_time=float(chunk.get("timestamp", (0.0, 0.0))[0] or 0.0),
-            end_time=float(chunk.get("timestamp", (0.0, 0.0))[1] or record.duration_seconds),
-            text=str(chunk.get("text", "")).strip(),
-            confidence=0.9,
-            engine_name="qwen3-asr",
-            language=str(output.get("language", "")),
-        )
-        for chunk in chunks
-        if str(chunk.get("text", "")).strip()
-    ]
+    return qwen_asr_adapter.transcribe(record, settings)
 
 
 def _run_faster_whisper(record: NormalizedAudioRecord, settings: Settings) -> list[ASRSegment]:

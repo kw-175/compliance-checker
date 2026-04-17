@@ -253,6 +253,36 @@ class SafetyResult(BaseModel):
 
 
 # 面向策略引擎的单转写单元证据聚合结构。
+# Hard-case adjudication output for uncertain audio units.
+class AudioHardCaseJudgement(BaseModel):
+    content_status: str = "clear"
+    privacy_status: str = "clear"
+    confidence: float = 0.0
+    rationale: str = ""
+    recommended_decision: Decision = Decision.REVIEW
+    requires_manual_review: bool = True
+    final_reasons: list[str] = Field(default_factory=list)
+
+
+class AudioHardCaseResult(BaseModel):
+    run_id: str
+    created_at: datetime = Field(default_factory=_utcnow)
+    unit_id: str
+    source_id: str
+    trigger_sources: list[str] = Field(default_factory=list)
+    trigger_reasons: list[str] = Field(default_factory=list)
+    model_name: str = ""
+    provider_name: str = ""
+    prompt_version: str = ""
+    adjudicated: bool = False
+    is_degraded: bool = False
+    uncertainty: float = 1.0
+    judgement: AudioHardCaseJudgement = Field(default_factory=AudioHardCaseJudgement)
+    raw_response: str = ""
+    notes: list[str] = Field(default_factory=list)
+
+
+# Aggregated evidence for policy decision.
 class TranscriptEvidence(BaseModel):
     unit_id: str
     source_id: str
@@ -265,6 +295,7 @@ class TranscriptEvidence(BaseModel):
     regex_hits: list[RegexHit] = Field(default_factory=list)
     privacy: Optional[PrivacyResult] = None
     safety: Optional[SafetyResult] = None
+    hard_case: Optional[AudioHardCaseResult] = None
     # ── 新增：降级事件与可信等级 ──
     degrade_events: list[dict[str, Any]] = Field(default_factory=list)
     trust_level: str = "full"
@@ -329,6 +360,7 @@ class AudioAuditRecord(BaseModel):
     transcript: TranscriptUnit
     privacy_result: Optional[PrivacyResult] = None
     safety_result: Optional[SafetyResult] = None
+    hard_case_result: Optional[AudioHardCaseResult] = None
     redaction_spans: list[RedactionSpan] = Field(default_factory=list)
     evidence: Optional[TranscriptEvidence] = None
     decision: Optional[UnitDecision] = None

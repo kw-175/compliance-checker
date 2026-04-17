@@ -1,4 +1,4 @@
-﻿"""
+"""
 Step G: semantic safety moderation.
 """
 
@@ -6,100 +6,17 @@ from __future__ import annotations
 
 import logging
 
+from audio.adapters import qwen_guard_adapter
 from audio.config.settings import Settings
 from audio.models.schemas import PrivacyResult, SafetyLevel, SafetyResult
 
 logger = logging.getLogger(__name__)
 
-_model = None
-_tokenizer = None
-
 _UNSAFE = {"bomb", "kill", "terrorism", "attack", "exploit", "murder", "weapon"}
 _CONTROVERSIAL = {"political", "protest", "censorship", "classified"}
 
 
-def _load_model(settings: Settings):
-    # 懒加载大模型与 tokenizer，避免重复占用显存/内存。
-    global _model, _tokenizer
-    if _model is not None:
-        return _model, _tokenizer
-
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-    import torch
-
-    device = settings.qwen_guard_device
-    if device == "auto":
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    _tokenizer = AutoTokenizer.from_pretrained(settings.qwen_guard_model, trust_remote_code=True)
-    _model = AutoModelForCausalLM.from_pretrained(
-        settings.qwen_guard_model,
-        trust_remote_code=True,
-        torch_dtype="auto",
-    ).to(device)
-    _model.eval()
-    return _model, _tokenizer
-
-
-def _parse_output(raw: str) -> tuple[SafetyLevel, list[str]]:
-    # 从模型自然语言输出中提取安全等级与风险类别。
-    raw_lower = raw.lower()
-    if "unsafe" in raw_lower:
-        level = SafetyLevel.UNSAFE
-    elif "controversial" in raw_lower:
-        level = SafetyLevel.CONTROVERSIAL
-    else:
-        level = SafetyLevel.SAFE
-
-    categories = []
-    for category in [
-        "violent_content",
-        "non_violent_illegal",
-        "sexual_content",
-        "pii_exposure",
-        "suicide_self_harm",
-        "unethical_acts",
-        "politically_sensitive",
-        "copyright_violation",
-        "jailbreak_attempt",
-        "hate_speech",
-        "discrimination",
-    ]:
-        if category in raw_lower:
-            categories.append(category)
-    return level, categories
-
-
-def _classify_with_model(text: str, model, tokenizer, device: str) -> tuple[SafetyLevel, list[str], str]:
-    # 通过结构化提示词约束模型输出格式，便于后处理解析。
-    import torch
-
-    prompt = (
-        "Classify the text as Safe, Controversial, or Unsafe. "
-        "Also list harm categories from: violent_content, non_violent_illegal, sexual_content, "
-        "pii_exposure, suicide_self_harm, unethical_acts, politically_sensitive, copyright_violation, "
-        "jailbreak_attempt, hate_speech, discrimination.\n"
-        "Respond as: Safety: <Safe|Controversial|Unsafe>; Categories: <comma-separated or none>.\n"
-        f"Text: {text[:2000]}"
-    )
-    messages = [{"role": "user", "content": prompt}]
-    formatted = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs = tokenizer(formatted, return_tensors="pt").to(device)
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=128,
-            do_sample=False,
-            temperature=0.0,
-        )
-    completion = outputs[0][inputs["input_ids"].shape[1]:]
-    raw = tokenizer.decode(completion, skip_special_tokens=True)
-    level, categories = _parse_output(raw)
-    return level, categories, raw
-
-
 def _mock_classify(text: str) -> tuple[SafetyLevel, list[str], str]:
-    # 模型不可用时的轻量关键词兜底分类。
     lower = text.lower()
     for keyword in _UNSAFE:
         if keyword in lower:
@@ -117,28 +34,37 @@ def run(results: list[PrivacyResult], settings: Settings | None = None) -> list[
         settings = get_settings()
 
     use_model = settings.qwen_guard_enabled
-    model = tokenizer = None
-    device = settings.qwen_guard_device
+    is_degraded = False
     if use_model:
         try:
-            model, tokenizer = _load_model(settings)
-            if device == "auto":
-                import torch
-
-                device = "cuda" if torch.cuda.is_available() else "cpu"
+            qwen_guard_adapter.load_model(settings)
         except Exception as exc:
-            # 任何模型加载失败都自动回落到 mock 规则。
             logger.warning("Qwen guard unavailable, fallback to mock moderation: %s", exc)
             use_model = False
+            is_degraded = True
 
     output: list[SafetyResult] = []
     for result in results:
-        # 优先使用脱敏文本参与审核，降低 PII 泄漏风险。
         text = result.redacted_text or result.original_text
-        if use_model and model is not None and tokenizer is not None:
-            level, categories, raw = _classify_with_model(text, model, tokenizer, device)
+        result_degraded = is_degraded
+        provider_name = "keyword_fallback"
+        model_version = ""
+
+        if use_model:
+            try:
+                moderation = qwen_guard_adapter.moderate(text, settings)
+                level = moderation.level
+                categories = moderation.categories
+                raw = moderation.raw_output
+                provider_name = "qwen_guard"
+                model_version = moderation.model_version
+            except Exception as exc:
+                logger.warning("Qwen guard failed, fallback to mock moderation: %s", exc)
+                level, categories, raw = _mock_classify(text)
+                result_degraded = True
         else:
             level, categories, raw = _mock_classify(text)
+
         score = 1.0 if level == SafetyLevel.SAFE else (0.5 if level == SafetyLevel.CONTROVERSIAL else 0.0)
         output.append(
             SafetyResult(
@@ -148,6 +74,11 @@ def run(results: list[PrivacyResult], settings: Settings | None = None) -> list[
                 harm_categories=categories,
                 raw_output=raw[:500],
                 score=score,
+                explanation=raw[:500],
+                provider_name=provider_name,
+                model_version=model_version,
+                is_degraded=result_degraded,
             )
         )
     return output
+

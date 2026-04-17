@@ -71,6 +71,7 @@ class AudioCompliancePipeline:
             c2_transcript_build,
             f_privacy_detection,
             g_safety_moderation,
+            hard_case_adjudication,
             h_evidence_aggregation,
             i_policy_decision,
         )
@@ -90,6 +91,7 @@ class AudioCompliancePipeline:
             "privacy": self.output_dir / "08_privacy_detection.jsonl",
             "redaction_spans": self.output_dir / "08b_redaction_spans.jsonl",
             "content_safety": self.output_dir / "09_content_safety.jsonl",
+            "hard_case": self.output_dir / "09b_hard_case_adjudication.jsonl",
             "evidence": self.output_dir / "10_evidence_bundle.json",
             "policy": self.output_dir / "11_policy_decision.json",
             "annotation": self.output_dir / "12_annotation_package.jsonl",
@@ -132,16 +134,27 @@ class AudioCompliancePipeline:
         safety_results = g_safety_moderation.run(privacy_results, self.settings)
         _write_jsonl(safety_results, artifact_paths["content_safety"])
 
+        hard_case_results = hard_case_adjudication.run(
+            transcript_units,
+            privacy_results,
+            safety_results,
+            self.settings,
+            run_id=self.run_id,
+        )
+        _write_jsonl(hard_case_results, artifact_paths["hard_case"])
+
         extension_events = self._run_detection_extensions(
             transcript_units=transcript_units,
             privacy_results=privacy_results,
             safety_results=safety_results,
+            hard_case_results=hard_case_results,
         )
         evidence_bundle = h_evidence_aggregation.run(
             transcript_units,
             privacy_results,
             safety_results,
             self.run_id,
+            hard_case_results=hard_case_results,
             extension_events=extension_events,
         )
         _write_json(evidence_bundle, artifact_paths["evidence"])
@@ -156,6 +169,7 @@ class AudioCompliancePipeline:
             redaction_spans,
             evidence_bundle,
             policy_decision,
+            hard_case_results=hard_case_results,
         )
         _write_jsonl(annotation_records, artifact_paths["annotation"])
         _write_jsonl(audit_records, artifact_paths["audit"])
@@ -184,7 +198,8 @@ class AudioCompliancePipeline:
             review_suggestions=review_suggestions[:20],
             explanation_summary=explanation_summary,
             metadata={
-                "active_detectors": ["privacy", "content_safety"],
+                "active_detectors": ["privacy", "content_safety", "hard_case_adjudication"],
+                "hard_case_units": len(hard_case_results),
                 "reserved_extension_events": len(extension_events),
             },
         )
@@ -211,7 +226,7 @@ class AudioCompliancePipeline:
             counts_by_decision={Decision.ALLOW.value: 0},
             artifact_paths={name: str(path) for name, path in artifact_paths.items()},
             explanation_summary=explanation,
-            metadata={"active_detectors": ["privacy", "content_safety"]},
+            metadata={"active_detectors": ["privacy", "content_safety", "hard_case_adjudication"]},
         )
         _write_single_jsonl(summary, artifact_paths["summary"])
         output = ComplianceOutput(
@@ -253,7 +268,7 @@ class AudioCompliancePipeline:
             legacy_decision=policy_decision.model_dump(mode="json"),
             metadata={
                 "artifact_paths": summary_record.artifact_paths,
-                "active_detectors": ["privacy", "content_safety"],
+                "active_detectors": ["privacy", "content_safety", "hard_case_adjudication"],
                 "extension_interface": "AudioCompliancePipeline._run_detection_extensions",
             },
         )

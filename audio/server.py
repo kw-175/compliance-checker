@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from audio.config.settings import get_settings
+from audio.config.settings import Settings, get_settings
 from audio.models.schemas import CheckRequest, CheckTaskInfo, TaskStatus
 from audio.pipeline import AudioCompliancePipeline
 
@@ -42,6 +42,20 @@ app = FastAPI(
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 
+def _apply_config_overrides(settings: Settings, config_overrides: dict[str, Any]) -> Settings:
+    valid_overrides = {
+        key: value
+        for key, value in config_overrides.items()
+        if hasattr(settings, key)
+    }
+    if not valid_overrides:
+        return settings
+
+    payload = settings.model_dump()
+    payload.update(valid_overrides)
+    return Settings.model_validate(payload)
+
+
 
 def _run_pipeline(task_id: str, input_paths: list[str], config_overrides: dict[str, Any]) -> None:
     # 后台任务入口：更新状态并执行完整管线。
@@ -51,7 +65,7 @@ def _run_pipeline(task_id: str, input_paths: list[str], config_overrides: dict[s
         settings = get_settings()
         if config_overrides:
             # 仅允许覆盖 Settings 中存在的字段，避免注入无效配置。
-            settings = settings.model_copy(update={key: value for key, value in config_overrides.items() if hasattr(settings, key)})
+            settings = _apply_config_overrides(settings, config_overrides)
         pipeline = AudioCompliancePipeline(settings=settings)
         # 让 pipeline run_id 与 task_id 对齐，便于 API 查询与目录索引一致。
         pipeline.run_id = task_id

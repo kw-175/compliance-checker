@@ -9,6 +9,7 @@ import logging
 from audio.models.schemas import (
     AudioAnnotationRecord,
     AudioAuditRecord,
+    AudioHardCaseResult,
     Decision,
     DeliveryStatus,
     EvidenceBundle,
@@ -55,9 +56,11 @@ def run(
     redaction_spans: list[RedactionSpan],
     evidence_bundle: EvidenceBundle,
     decision: PolicyDecision,
+    hard_case_results: list[AudioHardCaseResult] | None = None,
 ) -> tuple[list[AudioAnnotationRecord], list[AudioAuditRecord]]:
     privacy_by_unit = {item.unit_id: item for item in privacy_results}
     safety_by_unit = {item.unit_id: item for item in safety_results}
+    hard_case_by_unit = {item.unit_id: item for item in (hard_case_results or [])}
     evidence_by_unit = {item.unit_id: item for item in evidence_bundle.transcript_units}
     decision_by_unit: dict[str, UnitDecision] = {item.unit_id: item for item in decision.unit_decisions}
     redaction_spans_by_unit = _spans_by_unit(redaction_spans)
@@ -69,12 +72,15 @@ def run(
         unit_decision = decision_by_unit.get(unit.unit_id, UnitDecision(unit_id=unit.unit_id))
         privacy = privacy_by_unit.get(unit.unit_id)
         safety = safety_by_unit.get(unit.unit_id)
+        hard_case = hard_case_by_unit.get(unit.unit_id)
         spans = redaction_spans_by_unit.get(unit.unit_id, [])
         hints: list[str] = []
         if privacy and privacy.pii_count:
             hints.append(privacy.provider_name or "privacy detector")
         if safety and safety.safety_level.value != "safe":
             hints.append(safety.raw_output or f"safety={safety.safety_level.value}")
+        if hard_case:
+            hints.append(f"hard_case={hard_case.judgement.recommended_decision.value}")
 
         annotation_records.append(
             AudioAnnotationRecord(
@@ -107,12 +113,14 @@ def run(
                 transcript=unit,
                 privacy_result=privacy,
                 safety_result=safety,
+                hard_case_result=hard_case,
                 redaction_spans=spans,
                 evidence=evidence_by_unit.get(unit.unit_id),
                 decision=unit_decision,
                 provider_manifest={
                     "privacy": privacy.provider_name if privacy else "",
                     "content_safety": safety.provider_name if safety else "",
+                    "hard_case": hard_case.provider_name if hard_case else "",
                     "asr": unit.engine_name,
                 },
                 trust_level=evidence_bundle.trust_level,

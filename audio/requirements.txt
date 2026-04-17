@@ -11,6 +11,8 @@ faster-whisper
 pyannote.audio
 presidio-analyzer
 presidio-anonymizer
+stanza
+gliner
 transformers
 torch
 flashtext2

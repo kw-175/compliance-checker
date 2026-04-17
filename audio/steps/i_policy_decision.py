@@ -52,6 +52,21 @@ def _evaluate_unit(unit: TranscriptEvidence, extension_scores: dict[str, Any] | 
     else:
         scores["privacy"] = 1.0
 
+    if unit.hard_case:
+        hard_case = unit.hard_case
+        hard_decision = hard_case.judgement.recommended_decision
+        scores["hard_case_confidence"] = hard_case.judgement.confidence
+        scores["hard_case_uncertainty"] = hard_case.uncertainty
+        if hard_decision != Decision.ALLOW:
+            decision = _max_decision(decision, hard_decision)
+            reasons.append(f"hard-case adjudication: {hard_decision.value}")
+        if hard_case.judgement.requires_manual_review:
+            decision = _max_decision(decision, Decision.REVIEW)
+            if "hard-case manual review" not in reasons:
+                reasons.append("hard-case manual review")
+        if hard_case.is_degraded:
+            reasons.append("hard-case fallback used")
+
     for key, raw_score in (extension_scores or {}).items():
         try:
             scores[f"extension:{key}"] = float(raw_score)
@@ -74,6 +89,7 @@ def _local_decision(bundle: EvidenceBundle, extension_scores: dict[str, Any] | N
         overall_decision=overall,
         unit_decisions=decisions,
         trust_level=bundle.trust_level,
+        degrade_summary="" if bundle.trust_level == "full" else "Hard-case adjudication used a degraded fallback provider.",
         profile_name="audio-privacy-safety-v1",
     )
 

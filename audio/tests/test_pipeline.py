@@ -10,6 +10,9 @@ from fastapi.testclient import TestClient
 from audio.config.settings import Settings
 from audio.models.schemas import (
     ASRSegment,
+    AudioHardCaseJudgement,
+    AudioHardCaseResult,
+    Decision,
     DedupTranscriptUnit,
     EvidenceBundle,
     NormalizedAudioRecord,
@@ -149,6 +152,10 @@ def settings(tmp_path: Path) -> Settings:
         pyannote_enabled=False,
         opa_enabled=False,
         qwen_guard_enabled=False,
+        pii_enable_presidio=False,
+        pii_enable_gliner=False,
+        hard_case_local_model_path="",
+        hard_case_endpoint="",
     )
 
 
@@ -229,6 +236,79 @@ def test_asr_fallback(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> No
     assert result[0].engine_name == "faster-whisper"
 
 
+def test_qwen_asr_pipeline_is_cached(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> None:
+    from audio.adapters import qwen_asr_adapter
+    from audio.steps import c1_asr_transcribe
+
+    class FakeASRPipeline:
+        def __call__(self, audio_path: str) -> dict:
+            return {"text": f"transcript for {Path(audio_path).stem}", "chunks": []}
+
+    build_count = 0
+
+    def fake_build(*args, **kwargs):
+        nonlocal build_count
+        build_count += 1
+        return FakeASRPipeline()
+
+    qwen_asr_adapter.reset_cache()
+    monkeypatch.setattr(qwen_asr_adapter, "build_pipeline", fake_build)
+
+    records = [
+        NormalizedAudioRecord(source_id="src-001", original_path="orig-a.wav", normalized_path="norm-a.wav", duration_seconds=1.0),
+        NormalizedAudioRecord(source_id="src-002", original_path="orig-b.wav", normalized_path="norm-b.wav", duration_seconds=1.0),
+    ]
+    result = c1_asr_transcribe.run(
+        records,
+        settings.model_copy(
+            update={
+                "qwen_asr_enabled": True,
+                "faster_whisper_enabled": False,
+                "qwen_asr_device": "cpu",
+            }
+        ),
+    )
+
+    qwen_asr_adapter.reset_cache()
+    assert build_count == 1
+    assert [segment.source_id for segment in result] == ["src-001", "src-002"]
+    assert all(segment.engine_name == "qwen3-asr" for segment in result)
+
+
+def test_safety_moderation_uses_qwen_guard_adapter(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> None:
+    from audio.adapters import qwen_guard_adapter
+    from audio.steps.g_safety_moderation import run
+
+    monkeypatch.setattr(qwen_guard_adapter, "load_model", lambda settings: (object(), object(), "cpu"))
+
+    def fake_moderate(text: str, settings: Settings) -> qwen_guard_adapter.QwenGuardResult:
+        assert text == "redacted safety text"
+        return qwen_guard_adapter.QwenGuardResult(
+            level=SafetyLevel.UNSAFE,
+            categories=["violent_content"],
+            raw_output="Safety: Unsafe; Categories: violent_content",
+            model_version="fake-qwen-guard",
+        )
+
+    monkeypatch.setattr(qwen_guard_adapter, "moderate", fake_moderate)
+    results = run(
+        [
+            PrivacyResult(
+                unit_id="u1",
+                source_id="src-001",
+                original_text="raw safety text",
+                redacted_text="redacted safety text",
+            )
+        ],
+        settings.model_copy(update={"qwen_guard_enabled": True}),
+    )
+
+    assert results[0].provider_name == "qwen_guard"
+    assert results[0].model_version == "fake-qwen-guard"
+    assert results[0].safety_level == SafetyLevel.UNSAFE
+    assert results[0].harm_categories == ["violent_content"]
+
+
 def test_diarization_fallback(settings: Settings) -> None:
     from audio.steps.c1b_diarization import run
 
@@ -259,6 +339,111 @@ def test_legacy_keyword_and_regex_scan(settings: Settings) -> None:
     assert any(hit.pattern_name == "email_address" for hit in regex_hits)
 
 
+def test_audio_pii_local_engine_regex_detects_bilingual(settings: Settings) -> None:
+    from audio.steps.f_privacy_detection import run
+
+    units = [
+        TranscriptUnit(
+            unit_id="u1",
+            source_id="src-001",
+            start_time=0.0,
+            end_time=2.0,
+            speaker_id="speaker_0",
+            text="Contact john@example.com, phone 13800138000, student id STU20240001.",
+            language="zh",
+        )
+    ]
+
+    results, spans = run(units, settings)
+    entity_types = {entity.entity_type for entity in results[0].pii_entities}
+    assert {"EMAIL_ADDRESS", "CN_PHONE_NUMBER", "STUDENT_ID"}.issubset(entity_types)
+    assert "<EMAIL>" in results[0].redacted_text
+    assert "<PHONE>" in results[0].redacted_text
+    assert len(spans) == results[0].pii_count
+
+
+def test_hard_case_adjudication_heuristic_for_uncertain_safety(settings: Settings) -> None:
+    from audio.steps.hard_case_adjudication import run
+
+    units = [
+        TranscriptUnit(
+            unit_id="u1",
+            source_id="src-001",
+            start_time=0.0,
+            end_time=1.0,
+            speaker_id="speaker_0",
+            text="This is a borderline safety statement.",
+            confidence=0.55,
+            engine_name="fallback",
+        )
+    ]
+    safety_results = [
+        SafetyResult(
+            unit_id="u1",
+            source_id="src-001",
+            safety_level=SafetyLevel.CONTROVERSIAL,
+            score=0.5,
+            raw_output="borderline",
+        )
+    ]
+
+    results = run(units, [], safety_results, settings, run_id="run-001")
+    assert len(results) == 1
+    assert results[0].provider_name == "heuristic_fallback"
+    assert results[0].is_degraded is True
+    assert "content_safety" in results[0].trigger_sources
+    assert results[0].judgement.recommended_decision == Decision.REVIEW
+
+
+def test_hard_case_adjudication_uses_qwen_adapter(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> None:
+    from audio.adapters import qwen_hard_case_adapter
+    from audio.steps.hard_case_adjudication import run
+
+    def fake_adjudicate(prompt: str, settings: Settings) -> qwen_hard_case_adapter.HardCaseAdapterResult:
+        assert "audio_transcript_unit" in prompt
+        return qwen_hard_case_adapter.HardCaseAdapterResult(
+            judgement=AudioHardCaseJudgement(
+                content_status="borderline",
+                privacy_status="clear",
+                confidence=0.82,
+                rationale="Resolved by adapter.",
+                recommended_decision=Decision.REVIEW,
+                requires_manual_review=True,
+                final_reasons=["adapter_review"],
+            ),
+            provider_name="qwen_local",
+            raw_response='{"recommended_decision":"review"}',
+        )
+
+    monkeypatch.setattr(qwen_hard_case_adapter, "adjudicate", fake_adjudicate)
+    units = [
+        TranscriptUnit(
+            unit_id="u1",
+            source_id="src-001",
+            start_time=0.0,
+            end_time=1.0,
+            speaker_id="speaker_0",
+            text="This is a borderline safety statement.",
+            confidence=0.8,
+        )
+    ]
+    safety_results = [
+        SafetyResult(
+            unit_id="u1",
+            source_id="src-001",
+            safety_level=SafetyLevel.CONTROVERSIAL,
+            score=0.5,
+            raw_output="borderline",
+        )
+    ]
+
+    results = run(units, [], safety_results, settings, run_id="run-001")
+    assert len(results) == 1
+    assert results[0].provider_name == "qwen_local"
+    assert results[0].is_degraded is False
+    assert results[0].judgement.final_reasons == ["adapter_review"]
+
+
 def test_evidence_aggregation() -> None:
     from audio.steps.h_evidence_aggregation import run
 
@@ -272,6 +457,43 @@ def test_evidence_aggregation() -> None:
     assert bundle.summary["total_units"] == 1
     assert bundle.summary["total_pii_entities"] == 1
     assert bundle.summary["unsafe_units"] == 1
+
+
+def test_policy_uses_hard_case_recommendation(settings: Settings) -> None:
+    from audio.steps.i_policy_decision import run
+
+    hard_case = AudioHardCaseResult(
+        run_id="run-001",
+        unit_id="u1",
+        source_id="src-001",
+        trigger_sources=["privacy"],
+        trigger_reasons=["privacy_score_band_uncertain"],
+        provider_name="qwen_local",
+        adjudicated=True,
+        uncertainty=0.2,
+        judgement=AudioHardCaseJudgement(
+            confidence=0.8,
+            recommended_decision=Decision.QUARANTINE,
+            requires_manual_review=True,
+            rationale="Dense uncertain PII.",
+        ),
+    )
+    bundle = EvidenceBundle(
+        pipeline_run_id="run-001",
+        transcript_units=[
+            TranscriptEvidence(
+                unit_id="u1",
+                source_id="src-001",
+                text="borderline pii",
+                hard_case=hard_case,
+            )
+        ],
+        summary={},
+    )
+
+    decision = run(bundle, settings)
+    assert decision.overall_decision == Decision.QUARANTINE
+    assert any("hard-case adjudication" in reason for reason in decision.unit_decisions[0].reasons)
 
 
 def test_local_rule_decision(settings: Settings) -> None:
@@ -348,6 +570,7 @@ def test_pipeline_integration(sample_audio_path: str, settings: Settings) -> Non
     assert (pipeline.output_dir / "12_annotation_package.jsonl").exists()
     assert (pipeline.output_dir / "13_audit_package.jsonl").exists()
     assert (pipeline.output_dir / "14_run_summary.jsonl").exists()
+    assert (pipeline.output_dir / "09b_hard_case_adjudication.jsonl").exists()
     assert (pipeline.output_dir / "compliance_output.json").exists()
 
 
