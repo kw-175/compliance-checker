@@ -35,7 +35,7 @@ def run(results: list[PrivacyResult], settings: Settings | None = None) -> list[
 
     use_model = settings.qwen_guard_enabled
     is_degraded = False
-    if use_model:
+    if use_model and not settings.qwen_guard_endpoint:
         try:
             qwen_guard_adapter.load_model(settings)
         except Exception as exc:
@@ -56,7 +56,7 @@ def run(results: list[PrivacyResult], settings: Settings | None = None) -> list[
                 level = moderation.level
                 categories = moderation.categories
                 raw = moderation.raw_output
-                provider_name = "qwen_guard"
+                provider_name = "qwen_guard_endpoint" if settings.qwen_guard_endpoint else "qwen_guard"
                 model_version = moderation.model_version
             except Exception as exc:
                 logger.warning("Qwen guard failed, fallback to mock moderation: %s", exc)
@@ -81,4 +81,3 @@ def run(results: list[PrivacyResult], settings: Settings | None = None) -> list[
             )
         )
     return output
-

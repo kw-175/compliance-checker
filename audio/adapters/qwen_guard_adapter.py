@@ -109,7 +109,44 @@ def parse_output(raw: str) -> tuple[SafetyLevel, list[str]]:
     return level, categories
 
 
-def moderate(text: str, settings: Settings) -> QwenGuardResult:
+def _coerce_level(value: str) -> SafetyLevel:
+    normalized = str(value or "").strip().lower()
+    if normalized == "unsafe":
+        return SafetyLevel.UNSAFE
+    if normalized in {"controversial", "borderline"}:
+        return SafetyLevel.CONTROVERSIAL
+    return SafetyLevel.SAFE
+
+
+def moderate_endpoint(text: str, settings: Settings) -> QwenGuardResult | None:
+    if not settings.qwen_guard_endpoint:
+        return None
+
+    import httpx
+
+    response = httpx.post(
+        settings.qwen_guard_endpoint,
+        json={
+            "unit_id": "",
+            "text": text,
+            "model": settings.qwen_guard_model,
+        },
+        timeout=settings.qwen_guard_timeout_seconds,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("Qwen Guard endpoint must return a JSON object.")
+
+    return QwenGuardResult(
+        level=_coerce_level(str(payload.get("safety") or payload.get("level") or "")),
+        categories=[str(item) for item in (payload.get("categories") or payload.get("harm_categories") or [])],
+        raw_output=str(payload.get("raw_output", "")),
+        model_version=str(payload.get("model") or settings.qwen_guard_model),
+    )
+
+
+def moderate_local(text: str, settings: Settings) -> QwenGuardResult:
     import torch
 
     model, tokenizer, device = load_model(settings)
@@ -141,3 +178,9 @@ def moderate(text: str, settings: Settings) -> QwenGuardResult:
         model_version=settings.qwen_guard_model,
     )
 
+
+def moderate(text: str, settings: Settings) -> QwenGuardResult:
+    endpoint_result = moderate_endpoint(text, settings)
+    if endpoint_result is not None:
+        return endpoint_result
+    return moderate_local(text, settings)

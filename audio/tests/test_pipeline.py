@@ -16,6 +16,7 @@ from audio.models.schemas import (
     DedupTranscriptUnit,
     EvidenceBundle,
     NormalizedAudioRecord,
+    PIIEntity,
     PrivacyResult,
     SafetyLevel,
     SafetyResult,
@@ -275,6 +276,38 @@ def test_qwen_asr_pipeline_is_cached(monkeypatch: pytest.MonkeyPatch, settings: 
     assert all(segment.engine_name == "qwen3-asr" for segment in result)
 
 
+def test_qwen_asr_uses_endpoint_without_local_model(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> None:
+    from audio.adapters import qwen_asr_adapter
+    from audio.steps import c1_asr_transcribe
+
+    def fake_endpoint(record: NormalizedAudioRecord, settings: Settings) -> list[ASRSegment]:
+        assert settings.qwen_asr_endpoint == "http://asr.local/transcribe"
+        return [
+            ASRSegment(
+                source_id=record.source_id,
+                start_time=0.0,
+                end_time=1.0,
+                text="endpoint transcript",
+                confidence=0.9,
+                engine_name="qwen3-asr",
+            )
+        ]
+
+    def fail_local(*args, **kwargs):
+        raise AssertionError("local Qwen ASR model should not load when endpoint returns segments")
+
+    monkeypatch.setattr(qwen_asr_adapter, "transcribe_endpoint", fake_endpoint)
+    monkeypatch.setattr(qwen_asr_adapter, "transcribe_local", fail_local)
+    record = NormalizedAudioRecord(source_id="src-001", original_path="orig.wav", normalized_path="norm.wav", duration_seconds=1.0)
+    result = c1_asr_transcribe.run(
+        [record],
+        settings.model_copy(update={"qwen_asr_enabled": True, "qwen_asr_endpoint": "http://asr.local/transcribe"}),
+    )
+
+    assert len(result) == 1
+    assert result[0].text == "endpoint transcript"
+
+
 def test_safety_moderation_uses_qwen_guard_adapter(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> None:
     from audio.adapters import qwen_guard_adapter
     from audio.steps.g_safety_moderation import run
@@ -307,6 +340,34 @@ def test_safety_moderation_uses_qwen_guard_adapter(monkeypatch: pytest.MonkeyPat
     assert results[0].model_version == "fake-qwen-guard"
     assert results[0].safety_level == SafetyLevel.UNSAFE
     assert results[0].harm_categories == ["violent_content"]
+
+
+def test_safety_moderation_uses_guard_endpoint_without_local_load(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> None:
+    from audio.adapters import qwen_guard_adapter
+    from audio.steps.g_safety_moderation import run
+
+    def fail_load_model(settings: Settings):
+        raise AssertionError("local Qwen Guard model should not load when endpoint is configured")
+
+    def fake_moderate(text: str, settings: Settings) -> qwen_guard_adapter.QwenGuardResult:
+        assert settings.qwen_guard_endpoint == "http://guard.local/moderate"
+        return qwen_guard_adapter.QwenGuardResult(
+            level=SafetyLevel.CONTROVERSIAL,
+            categories=["politically_sensitive"],
+            raw_output="Safety: Controversial; Categories: politically_sensitive",
+            model_version="guard-endpoint",
+        )
+
+    monkeypatch.setattr(qwen_guard_adapter, "load_model", fail_load_model)
+    monkeypatch.setattr(qwen_guard_adapter, "moderate", fake_moderate)
+    results = run(
+        [PrivacyResult(unit_id="u1", source_id="src-001", redacted_text="borderline text")],
+        settings.model_copy(update={"qwen_guard_enabled": True, "qwen_guard_endpoint": "http://guard.local/moderate"}),
+    )
+
+    assert results[0].provider_name == "qwen_guard_endpoint"
+    assert results[0].model_version == "guard-endpoint"
+    assert results[0].safety_level == SafetyLevel.CONTROVERSIAL
 
 
 def test_diarization_fallback(settings: Settings) -> None:
@@ -360,6 +421,46 @@ def test_audio_pii_local_engine_regex_detects_bilingual(settings: Settings) -> N
     assert "<EMAIL>" in results[0].redacted_text
     assert "<PHONE>" in results[0].redacted_text
     assert len(spans) == results[0].pii_count
+
+
+def test_privacy_detection_uses_pii_endpoint(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> None:
+    from audio.adapters import pii_service_adapter
+    from audio.steps.f_privacy_detection import run
+    from audio.steps.pii_local_engine import LocalPIIDetection
+
+    def fake_detect(text: str, settings: Settings, language: str = "") -> LocalPIIDetection:
+        assert settings.pii_endpoint == "http://pii.local/analyze"
+        return LocalPIIDetection(
+            entities=[
+                PIIEntity(
+                    entity_type="EMAIL_ADDRESS",
+                    start=text.index("john@example.com"),
+                    end=text.index("john@example.com") + len("john@example.com"),
+                    score=0.95,
+                    original_text="john@example.com",
+                )
+            ],
+            provider_name="pii_endpoint",
+            provider_version=settings.pii_endpoint,
+            is_degraded=False,
+        )
+
+    monkeypatch.setattr(pii_service_adapter, "detect", fake_detect)
+    units = [
+        TranscriptUnit(
+            unit_id="u1",
+            source_id="src-001",
+            start_time=0.0,
+            end_time=1.0,
+            text="Contact john@example.com.",
+        )
+    ]
+    results, spans = run(units, settings.model_copy(update={"pii_endpoint": "http://pii.local/analyze"}))
+
+    assert results[0].provider_name == "pii_endpoint"
+    assert results[0].provider_version == "http://pii.local/analyze"
+    assert results[0].redacted_text == "Contact <EMAIL>."
+    assert len(spans) == 1
 
 
 def test_hard_case_adjudication_heuristic_for_uncertain_safety(settings: Settings) -> None:

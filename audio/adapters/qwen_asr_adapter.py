@@ -104,7 +104,40 @@ def _normalize_output(output: Any, record: NormalizedAudioRecord) -> tuple[list[
     return [chunk for chunk in chunks if isinstance(chunk, dict)], str(output.get("language", ""))
 
 
-def transcribe(record: NormalizedAudioRecord, settings: Settings) -> list[ASRSegment]:
+def _segments_from_rows(rows: list[dict[str, Any]], source_id: str) -> list[ASRSegment]:
+    segments: list[ASRSegment] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        payload = dict(row)
+        payload["source_id"] = source_id
+        segments.append(ASRSegment.model_validate(payload))
+    return segments
+
+
+def transcribe_endpoint(record: NormalizedAudioRecord, settings: Settings) -> list[ASRSegment] | None:
+    if not settings.qwen_asr_endpoint:
+        return None
+
+    import httpx
+
+    response = httpx.post(
+        settings.qwen_asr_endpoint,
+        json={
+            "source_id": record.source_id,
+            "audio_path": record.normalized_path,
+            "duration_seconds": record.duration_seconds,
+        },
+        timeout=settings.qwen_asr_timeout_seconds,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("Qwen ASR endpoint must return a JSON object.")
+    return _segments_from_rows(payload.get("segments") or [], record.source_id)
+
+
+def transcribe_local(record: NormalizedAudioRecord, settings: Settings) -> list[ASRSegment]:
     asr = load_pipeline(settings)
     output = asr(record.normalized_path)
     chunks, language = _normalize_output(output, record)
@@ -128,3 +161,9 @@ def transcribe(record: NormalizedAudioRecord, settings: Settings) -> list[ASRSeg
         )
     return segments
 
+
+def transcribe(record: NormalizedAudioRecord, settings: Settings) -> list[ASRSegment]:
+    endpoint_segments = transcribe_endpoint(record, settings)
+    if endpoint_segments is not None:
+        return endpoint_segments
+    return transcribe_local(record, settings)

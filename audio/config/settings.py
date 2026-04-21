@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     qwen_asr_enabled: bool = Field(default=True)
     qwen_asr_model: str = Field(default="/data/kw/compliance-checker/models/Qwen/Qwen3-ASR-0.6B")
     qwen_asr_device: str = Field(default="auto")
+    qwen_asr_endpoint: str = Field(default="")
+    qwen_asr_timeout_seconds: int = Field(default=180)
     faster_whisper_enabled: bool = Field(default=True)
     faster_whisper_model: str = Field(default="base")
 
@@ -68,11 +70,15 @@ class Settings(BaseSettings):
     pii_enable_regex_rules: bool = Field(default=True)
     pii_score_threshold: float = Field(default=0.45)
     pii_model_name: Optional[str] = Field(default=None)
+    pii_endpoint: str = Field(default="")
+    pii_timeout_seconds: int = Field(default=60)
 
     # Content safety moderation.
     qwen_guard_enabled: bool = Field(default=True)
     qwen_guard_model: str = Field(default="/data/kw/compliance-checker/models/Qwen/Qwen3Guard-Gen-0.6B")
     qwen_guard_device: str = Field(default="auto")
+    qwen_guard_endpoint: str = Field(default="")
+    qwen_guard_timeout_seconds: int = Field(default=90)
 
     # Hard-case adjudication for uncertain audio compliance records.
     enable_hard_case_adjudication: bool = Field(default=True)

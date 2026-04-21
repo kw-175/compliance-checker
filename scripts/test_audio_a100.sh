@@ -2,30 +2,28 @@
 set -Eeuo pipefail
 
 PROJECT="${PROJECT:-/data/kw/compliance-checker}"
-AUDIO_HOST="${AUDIO_HOST:-127.0.0.1}"
-AUDIO_PORT="${AUDIO_PORT:-8010}"
 AUDIO_WORK_DIR="${AUDIO_WORK_DIR:-$PROJECT/temp/audio_a100_output}"
-
 TEMP_DIR="${TEMP_DIR:-$PROJECT/temp}"
 PKG_DIR="${PKG_DIR:-$TEMP_DIR/audio_a100_pkg}"
 SUBMIT_JSON="${SUBMIT_JSON:-$TEMP_DIR/audio_a100_submit.json}"
 RESULT_JSON="${RESULT_JSON:-$TEMP_DIR/audio_a100_result.json}"
 STATUS_JSON="${STATUS_JSON:-$TEMP_DIR/audio_a100_status.json}"
-HEALTH_JSON="${HEALTH_JSON:-$TEMP_DIR/audio_a100_health.json}"
 
-PII_ROOT="${PII_ROOT:-$PROJECT/models/compliance-pii}"
-PII_STANZA_RESOURCES_DIR="${PII_STANZA_RESOURCES_DIR:-$PII_ROOT/stanza_resources}"
-GLINER_MODEL_DIR="${GLINER_MODEL_DIR:-$PII_ROOT/gliner-pii-large-v1.0}"
-QWEN_ASR_MODEL="${QWEN_ASR_MODEL:-$PROJECT/models/Qwen/Qwen3-ASR-0.6B}"
-QWEN_GUARD_MODEL="${QWEN_GUARD_MODEL:-$PROJECT/models/Qwen/Qwen3Guard-Gen-0.6B}"
-HARD_CASE_MODEL="${HARD_CASE_MODEL:-$PROJECT/models/Qwen/Qwen3.5-9B}"
+PII_HOST="${PII_HOST:-127.0.0.1}"
+PII_PORT="${PII_PORT:-5012}"
+ASR_HOST="${ASR_HOST:-127.0.0.1}"
+ASR_PORT="${ASR_PORT:-8011}"
+GUARD_HOST="${GUARD_HOST:-127.0.0.1}"
+GUARD_PORT="${GUARD_PORT:-8012}"
+HARD_CASE_HOST="${HARD_CASE_HOST:-127.0.0.1}"
+HARD_CASE_PORT="${HARD_CASE_PORT:-8013}"
+AUDIO_HOST="${AUDIO_HOST:-127.0.0.1}"
+AUDIO_PORT="${AUDIO_PORT:-8010}"
+
 FFMPEG_BIN="${FFMPEG_BIN:-/data/kw/.local/bin/ffmpeg}"
 FFPROBE_BIN="${FFPROBE_BIN:-/data/kw/.local/bin/ffprobe}"
-
-AUDIO_GPU="${AUDIO_GPU:-0}"
-QWEN_ASR_DEVICE="${QWEN_ASR_DEVICE:-cuda}"
-QWEN_GUARD_DEVICE="${QWEN_GUARD_DEVICE:-cuda}"
-HARD_CASE_DEVICE="${HARD_CASE_DEVICE:-cuda}"
+QWEN_ASR_MODEL="${QWEN_ASR_MODEL:-$PROJECT/models/Qwen/Qwen3-ASR-0.6B}"
+QWEN_GUARD_MODEL="${QWEN_GUARD_MODEL:-$PROJECT/models/Qwen/Qwen3Guard-Gen-0.6B}"
 
 AUDIO_ENV_ACTIVATE="${AUDIO_ENV_ACTIVATE:-$PROJECT/.venv/bin/activate}"
 PYTHON_RUNNER="${PYTHON_RUNNER:-}"
@@ -34,8 +32,14 @@ POLL_INTERVAL="${POLL_INTERVAL:-5}"
 CURL_CONNECT_TIMEOUT="${CURL_CONNECT_TIMEOUT:-5}"
 CURL_MAX_TIME="${CURL_MAX_TIME:-180}"
 RUN_PYTEST="${RUN_PYTEST:-false}"
-RUN_ASR_MODEL_LOAD_PROBE="${RUN_ASR_MODEL_LOAD_PROBE:-true}"
+RUN_ASR_SERVICE_PROBE="${RUN_ASR_SERVICE_PROBE:-true}"
 ALLOW_HEURISTIC_HARD_CASE="${ALLOW_HEURISTIC_HARD_CASE:-false}"
+
+PII_ENDPOINT="http://${PII_HOST}:${PII_PORT}/analyze"
+ASR_ENDPOINT="http://${ASR_HOST}:${ASR_PORT}/transcribe"
+GUARD_ENDPOINT="http://${GUARD_HOST}:${GUARD_PORT}/moderate"
+HARD_CASE_ENDPOINT="http://${HARD_CASE_HOST}:${HARD_CASE_PORT}/adjudicate"
+AUDIO_BASE_URL="http://${AUDIO_HOST}:${AUDIO_PORT}"
 
 log() {
   printf '[audio-a100-test] %s\n' "$*"
@@ -56,27 +60,18 @@ require_cmd() {
   fi
 }
 
-validate_paths() {
-  [[ -d "$PROJECT" ]] || fail "PROJECT does not exist: $PROJECT"
-  [[ -f "$FFMPEG_BIN" ]] || fail "FFMPEG_BIN does not exist: $FFMPEG_BIN"
-  [[ -f "$FFPROBE_BIN" ]] || fail "FFPROBE_BIN does not exist: $FFPROBE_BIN"
-  [[ -d "$PII_STANZA_RESOURCES_DIR" ]] || fail "PII_STANZA_RESOURCES_DIR does not exist: $PII_STANZA_RESOURCES_DIR"
-  [[ -d "$GLINER_MODEL_DIR" ]] || fail "GLINER_MODEL_DIR does not exist: $GLINER_MODEL_DIR"
-  [[ -d "$QWEN_GUARD_MODEL" ]] || fail "QWEN_GUARD_MODEL does not exist: $QWEN_GUARD_MODEL"
-  if [[ "$RUN_ASR_MODEL_LOAD_PROBE" == "true" ]]; then
-    [[ -d "$QWEN_ASR_MODEL" ]] || fail "QWEN_ASR_MODEL does not exist: $QWEN_ASR_MODEL"
-  fi
-  if [[ "$ALLOW_HEURISTIC_HARD_CASE" != "true" ]]; then
-    [[ -d "$HARD_CASE_MODEL" ]] || fail "HARD_CASE_MODEL does not exist: $HARD_CASE_MODEL"
-  fi
-}
-
 activate_audio_env() {
   if [[ -n "$AUDIO_ENV_ACTIVATE" ]]; then
     [[ -f "$AUDIO_ENV_ACTIVATE" ]] || fail "AUDIO_ENV_ACTIVATE does not exist: $AUDIO_ENV_ACTIVATE"
     # shellcheck disable=SC1090
     source "$AUDIO_ENV_ACTIVATE"
   fi
+}
+
+validate_paths() {
+  [[ -d "$PROJECT" ]] || fail "PROJECT does not exist: $PROJECT"
+  [[ -f "$FFMPEG_BIN" ]] || fail "FFMPEG_BIN does not exist: $FFMPEG_BIN"
+  [[ -f "$FFPROBE_BIN" ]] || fail "FFPROBE_BIN does not exist: $FFPROBE_BIN"
 }
 
 post_json() {
@@ -87,6 +82,13 @@ post_json() {
     --max-time "$CURL_MAX_TIME" \
     -H "Content-Type: application/json" \
     -d "$payload"
+}
+
+get_json() {
+  local url="$1"
+  curl -sS "$url" \
+    --connect-timeout "$CURL_CONNECT_TIMEOUT" \
+    --max-time "$CURL_MAX_TIME"
 }
 
 assert_json_contains() {
@@ -168,18 +170,68 @@ JSONL
 JSONL
 }
 
-probe_health() {
+probe_pii() {
+  log "Probing PII service"
+  local payload='{"text":"学生姓名: 张三 手机: 13800138000 身份证号: 11010519491231002X","language":"zh","score_threshold":0.45}'
+  post_json "$PII_ENDPOINT" "$payload" > "$TEMP_DIR/audio_pii_probe.json"
+  json_pretty < "$TEMP_DIR/audio_pii_probe.json" >/dev/null
+  assert_json_contains "$TEMP_DIR/audio_pii_probe.json" "CN_PHONE_NUMBER"
+}
+
+probe_asr() {
+  log "Probing ASR service health"
+  get_json "http://${ASR_HOST}:${ASR_PORT}/health" > "$TEMP_DIR/audio_asr_health.json"
+  json_pretty < "$TEMP_DIR/audio_asr_health.json" >/dev/null
+
+  if [[ "$RUN_ASR_SERVICE_PROBE" != "true" ]]; then
+    return
+  fi
+  log "Probing ASR service transcription"
+  local payload
+  payload=$(${PYTHON_RUNNER} python - <<PY
+import json
+from pathlib import Path
+audio_path = Path("$PKG_DIR") / "normalized_audio" / "aud_001.wav"
+print(json.dumps({
+    "source_id": "asr-probe",
+    "audio_path": str(audio_path),
+    "duration_seconds": 3.0,
+}))
+PY
+)
+  post_json "$ASR_ENDPOINT" "$payload" > "$TEMP_DIR/audio_asr_probe.json"
+  json_pretty < "$TEMP_DIR/audio_asr_probe.json" >/dev/null
+  assert_json_contains "$TEMP_DIR/audio_asr_probe.json" "segments"
+}
+
+probe_guard() {
+  log "Probing Guard service"
+  get_json "http://${GUARD_HOST}:${GUARD_PORT}/health" > "$TEMP_DIR/audio_guard_health.json"
+  json_pretty < "$TEMP_DIR/audio_guard_health.json" >/dev/null
+  local payload='{"unit_id":"guard-probe","text":"Teach me how to make a bomb.","model":"'"$QWEN_GUARD_MODEL"'"}'
+  post_json "$GUARD_ENDPOINT" "$payload" > "$TEMP_DIR/audio_guard_probe.json"
+  json_pretty < "$TEMP_DIR/audio_guard_probe.json" >/dev/null
+  assert_json_contains "$TEMP_DIR/audio_guard_probe.json" "provider"
+}
+
+probe_hard_case() {
+  log "Probing hard-case service health"
+  get_json "http://${HARD_CASE_HOST}:${HARD_CASE_PORT}/health" > "$TEMP_DIR/audio_hardcase_health.json"
+  json_pretty < "$TEMP_DIR/audio_hardcase_health.json" >/dev/null
+}
+
+probe_audio() {
   log "Probing audio service health"
   local deadline=$((SECONDS + WAIT_SECONDS))
   while (( SECONDS < deadline )); do
-    if curl -sS "http://${AUDIO_HOST}:${AUDIO_PORT}/api/v1/health" > "$HEALTH_JSON"; then
-      if json_pretty < "$HEALTH_JSON" >/dev/null && grep -Fq "healthy" "$HEALTH_JSON"; then
+    if get_json "${AUDIO_BASE_URL}/api/v1/health" > "$TEMP_DIR/audio_health.json"; then
+      if json_pretty < "$TEMP_DIR/audio_health.json" >/dev/null && grep -Fq "healthy" "$TEMP_DIR/audio_health.json"; then
         return
       fi
     fi
     sleep "$POLL_INTERVAL"
   done
-  fail "Timed out waiting for audio service health at http://${AUDIO_HOST}:${AUDIO_PORT}/api/v1/health"
+  fail "Timed out waiting for audio service health at ${AUDIO_BASE_URL}/api/v1/health"
 }
 
 run_unit_tests() {
@@ -189,31 +241,6 @@ run_unit_tests() {
   log "Running audio pytest suite"
   cd "$PROJECT"
   ${PYTHON_RUNNER} python -m pytest -q audio/tests
-}
-
-probe_asr_model_load() {
-  if [[ "$RUN_ASR_MODEL_LOAD_PROBE" != "true" ]]; then
-    return
-  fi
-  log "Loading Qwen ASR model once in a short-lived probe process"
-  cd "$PROJECT"
-  CUDA_VISIBLE_DEVICES="$AUDIO_GPU" \
-  HF_HUB_OFFLINE=1 \
-  TRANSFORMERS_OFFLINE=1 \
-  ${PYTHON_RUNNER} python - <<PY
-from audio.adapters import qwen_asr_adapter
-from audio.config.settings import Settings
-
-settings = Settings(
-    qwen_asr_model="$QWEN_ASR_MODEL",
-    qwen_asr_device="$QWEN_ASR_DEVICE",
-    qwen_guard_enabled=False,
-    enable_hard_case_adjudication=False,
-)
-pipeline = qwen_asr_adapter.load_pipeline(settings)
-print(f"Qwen ASR pipeline loaded: {type(pipeline).__name__}")
-qwen_asr_adapter.reset_cache()
-PY
 }
 
 submit_audio_job() {
@@ -227,29 +254,26 @@ print(json.dumps({
         "work_dir": "$AUDIO_WORK_DIR",
         "ffmpeg_bin": "$FFMPEG_BIN",
         "ffprobe_bin": "$FFPROBE_BIN",
+        "pii_endpoint": "$PII_ENDPOINT",
+        "pii_timeout_seconds": 90,
         "qwen_asr_enabled": True,
-        "qwen_asr_model": "$QWEN_ASR_MODEL",
-        "qwen_asr_device": "$QWEN_ASR_DEVICE",
+        "qwen_asr_endpoint": "$ASR_ENDPOINT",
+        "qwen_asr_timeout_seconds": 300,
         "faster_whisper_enabled": False,
         "pyannote_enabled": False,
         "qwen_guard_enabled": True,
-        "qwen_guard_model": "$QWEN_GUARD_MODEL",
-        "qwen_guard_device": "$QWEN_GUARD_DEVICE",
-        "pii_model_root": "$PII_ROOT",
-        "pii_stanza_resources_dir": "$PII_STANZA_RESOURCES_DIR",
-        "pii_gliner_model": "$GLINER_MODEL_DIR",
-        "pii_enable_presidio": True,
-        "pii_enable_gliner": True,
-        "pii_enable_regex_rules": True,
+        "qwen_guard_endpoint": "$GUARD_ENDPOINT",
+        "qwen_guard_timeout_seconds": 120,
         "enable_hard_case_adjudication": True,
-        "hard_case_local_model_path": "$HARD_CASE_MODEL",
-        "hard_case_device": "$HARD_CASE_DEVICE",
+        "hard_case_endpoint": "$HARD_CASE_ENDPOINT",
+        "hard_case_local_model_path": "",
+        "hard_case_timeout_seconds": 180,
         "opa_enabled": False
     },
 }, ensure_ascii=False))
 PY
 )
-  post_json "http://${AUDIO_HOST}:${AUDIO_PORT}/api/v1/check" "$payload" | tee "$SUBMIT_JSON" >/dev/null
+  post_json "${AUDIO_BASE_URL}/api/v1/check" "$payload" | tee "$SUBMIT_JSON" >/dev/null
   json_pretty < "$SUBMIT_JSON" >/dev/null
 }
 
@@ -272,7 +296,7 @@ wait_for_result() {
   log "Waiting for task result: $task_id"
 
   while (( SECONDS < deadline )); do
-    curl -sS "http://${AUDIO_HOST}:${AUDIO_PORT}/api/v1/status/${task_id}" > "$STATUS_JSON" || true
+    curl -sS "${AUDIO_BASE_URL}/api/v1/status/${task_id}" > "$STATUS_JSON" || true
     status="$(${PYTHON_RUNNER} python - <<PY
 import json
 from pathlib import Path
@@ -291,7 +315,7 @@ PY
   done
   [[ "$status" == "completed" ]] || fail "Timed out waiting for task completion after ${WAIT_SECONDS}s"
 
-  curl -sS "http://${AUDIO_HOST}:${AUDIO_PORT}/api/v1/result/${task_id}" | tee "$RESULT_JSON" >/dev/null
+  curl -sS "${AUDIO_BASE_URL}/api/v1/result/${task_id}" | tee "$RESULT_JSON" >/dev/null
   json_pretty < "$RESULT_JSON" >/dev/null
   assert_json_contains "$RESULT_JSON" "annotation_package_uri"
   assert_json_contains "$RESULT_JSON" "audit_package_uri"
@@ -326,17 +350,18 @@ check_artifacts() {
   done
 
   assert_json_contains "$run_dir/04_asr_segments.jsonl" "cleaner-asr"
+  assert_json_contains "$run_dir/08_privacy_detection.jsonl" "pii_endpoint"
   assert_json_contains "$run_dir/08_privacy_detection.jsonl" "EMAIL_ADDRESS"
   assert_json_contains "$run_dir/08_privacy_detection.jsonl" "CN_PHONE_NUMBER"
   assert_json_contains "$run_dir/08_privacy_detection.jsonl" "STUDENT_ID"
-  assert_json_contains "$run_dir/09_content_safety.jsonl" "qwen_guard"
+  assert_json_contains "$run_dir/09_content_safety.jsonl" "qwen_guard_endpoint"
   assert_json_contains "$run_dir/12_annotation_package.jsonl" "redacted_view"
   assert_json_contains "$run_dir/13_audit_package.jsonl" "provider_manifest"
 
   if [[ "$ALLOW_HEURISTIC_HARD_CASE" == "true" ]]; then
     assert_json_contains "$run_dir/09b_hard_case_adjudication.jsonl" "heuristic_fallback"
   else
-    assert_json_contains "$run_dir/09b_hard_case_adjudication.jsonl" "qwen_local"
+    assert_json_contains "$run_dir/09b_hard_case_adjudication.jsonl" "qwen_endpoint"
   fi
 
   ${PYTHON_RUNNER} python - <<PY
@@ -349,6 +374,8 @@ privacy_rows = [
     for line in (run_dir / "08_privacy_detection.jsonl").read_text(encoding="utf-8").splitlines()
     if line.strip()
 ]
+if not any(row.get("provider_name") == "pii_endpoint" for row in privacy_rows):
+    raise SystemExit("PII endpoint provider was not used")
 if not any(row.get("pii_count", 0) > 0 for row in privacy_rows):
     raise SystemExit("No PII rows detected")
 
@@ -357,8 +384,8 @@ safety_rows = [
     for line in (run_dir / "09_content_safety.jsonl").read_text(encoding="utf-8").splitlines()
     if line.strip()
 ]
-if not any(row.get("provider_name") == "qwen_guard" for row in safety_rows):
-    raise SystemExit("Qwen Guard provider was not used")
+if not any(row.get("provider_name") == "qwen_guard_endpoint" for row in safety_rows):
+    raise SystemExit("Qwen Guard endpoint provider was not used")
 
 hard_rows = [
     json.loads(line)
@@ -367,8 +394,8 @@ hard_rows = [
 ]
 if not hard_rows:
     raise SystemExit("No hard-case adjudication rows produced")
-if "$ALLOW_HEURISTIC_HARD_CASE" != "true" and not any(row.get("provider_name") == "qwen_local" for row in hard_rows):
-    raise SystemExit(f"Hard-case Qwen local provider was not used: {hard_rows}")
+if "$ALLOW_HEURISTIC_HARD_CASE" != "true" and not any(row.get("provider_name") == "qwen_endpoint" for row in hard_rows):
+    raise SystemExit(f"Hard-case endpoint provider was not used: {hard_rows}")
 PY
 
   log "Run dir: $run_dir"
@@ -383,8 +410,11 @@ main() {
   cd "$PROJECT"
   run_unit_tests
   prepare_package
-  probe_health
-  probe_asr_model_load
+  probe_pii
+  probe_asr
+  probe_guard
+  probe_hard_case
+  probe_audio
   submit_audio_job
 
   local task_id
@@ -392,7 +422,8 @@ main() {
   wait_for_result "$task_id"
   check_artifacts "$task_id"
 
-  log "A100 audio workflow smoke test passed."
+  log "A100 multi-window audio workflow smoke test passed."
 }
 
 main "$@"
+

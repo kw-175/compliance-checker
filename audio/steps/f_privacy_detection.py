@@ -4,9 +4,14 @@ Step F: privacy detection and redaction span generation.
 
 from __future__ import annotations
 
+import logging
+
+from audio.adapters import pii_service_adapter
 from audio.config.settings import Settings
 from audio.models.schemas import DedupTranscriptUnit, PIIEntity, PrivacyResult, RedactionSpan, TranscriptUnit
-from audio.steps.pii_local_engine import detect
+from audio.steps.pii_local_engine import detect as local_detect
+
+logger = logging.getLogger(__name__)
 
 _REPLACEMENTS = {
     "PERSON": "<PERSON>",
@@ -76,7 +81,13 @@ def run(
             continue
 
         language = getattr(unit, "language", "")
-        detection = detect(unit.text, settings, language=language)
+        try:
+            detection = pii_service_adapter.detect(unit.text, settings, language=language)
+        except Exception as exc:
+            logger.warning("PII endpoint failed for %s, using local PII engine: %s", unit.unit_id, exc)
+            detection = None
+        if detection is None:
+            detection = local_detect(unit.text, settings, language=language)
         entities = detection.entities
         redacted = _redact_text(unit.text, entities)
 
