@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from inspect import signature
 from threading import Lock
 
 from audio.config.settings import Settings
@@ -46,10 +47,17 @@ def build_model(settings: Settings, device: str):
 
     logger.info("Loading Qwen Guard model: %s on %s", settings.qwen_guard_model, device)
     tokenizer = AutoTokenizer.from_pretrained(settings.qwen_guard_model, trust_remote_code=True)
+    model_kwargs = {
+        "trust_remote_code": True,
+    }
+    from_pretrained_params = signature(AutoModelForCausalLM.from_pretrained).parameters
+    if "dtype" in from_pretrained_params:
+        model_kwargs["dtype"] = "auto"
+    else:
+        model_kwargs["torch_dtype"] = "auto"
     model = AutoModelForCausalLM.from_pretrained(
         settings.qwen_guard_model,
-        trust_remote_code=True,
-        torch_dtype="auto",
+        **model_kwargs,
     )
     model.to(device)
     model.eval()
@@ -166,7 +174,6 @@ def moderate_local(text: str, settings: Settings) -> QwenGuardResult:
             **inputs,
             max_new_tokens=128,
             do_sample=False,
-            temperature=0.0,
         )
     completion = outputs[0][inputs["input_ids"].shape[1]:]
     raw = tokenizer.decode(completion, skip_special_tokens=True)
