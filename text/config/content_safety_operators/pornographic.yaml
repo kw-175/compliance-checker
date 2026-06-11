@@ -1,0 +1,10 @@
+sub_operator_id: CSA_002
+display_name: Pornographic content
+target_labels:
+  - content.pornographic
+description: Pornographic, explicit sexual, or vulgar sexualized content.
+prompt_profile: sexual_content
+decision_source: gpt52_content_safety
+aliases:
+  - pornographic_content
+  - content.pornographic

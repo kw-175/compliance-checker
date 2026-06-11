@@ -1,0 +1,100 @@
+# Local secrets and machine-specific files
+.env
+.env.*
+!.env.example
+.codex
+.agents/
+
+# Python bytecode, test caches, and tooling caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+.venvs/
+venv/
+env/
+ENV/
+**/.venv/
+**/.venv*/
+
+# Dependency and package caches
+.uv-cache/
+.cache/
+caches/
+pip-wheel-metadata/
+build/
+dist/
+*.egg-info/
+
+# Runtime output, temporary files, and generated reports
+.runtime/
+.tmp/
+tmp/
+temp/
+temp1/
+temp_text/
+outputs/
+compliance_output_picture/
+video_test_runs/
+*.log
+*.pid
+*.sock
+
+# Model directories and ML artifacts
+/models/
+*.bin
+*.ckpt
+*.gguf
+*.h5
+*.model
+*.onnx
+*.pdiparams
+*.pdmodel
+*.pt
+*.pth
+*.safetensors
+*.tflite
+*.engine
+
+# Downloaded packages and large binary tools
+packages/
+*.whl
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+tools/opa
+tools/trufflehog
+
+# Generated or large media artifacts
+*.wav
+*.mp3
+*.flac
+*.aac
+*.m4a
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.gif
+*.jpg
+*.jpeg
+*.png
+*.webp
+
+# Keep lightweight test fixtures versionable even when they use media formats.
+!**/tests/fixtures/
+!**/tests/fixtures/**
+
+# Never keep bytecode, even under fixture directories.
+**/__pycache__/
+*.py[cod]

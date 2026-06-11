@@ -1,0 +1,80 @@
+# Default Chinese Enterprise Compliance Profile
+# =============================================
+# This profile defines the policy rules for picture compliance checking
+# targeting Chinese enterprise scenarios.
+
+policy:
+  # ── Safety moderation ──────────────────────────────────────────
+  # Categories that trigger immediate DROP decision
+  safety_drop_categories:
+    - explicit
+    - graphic_violence
+    - self_harm
+    - other_nsfw
+
+  # Minimum score for a safety category to trigger DROP
+  safety_drop_threshold: 0.7
+
+  # ── Text PII ───────────────────────────────────────────────────
+  # PII categories that trigger PASS_REDACTED decision
+  pii_redact_categories:
+    - person_name
+    - phone_number
+    - email
+    - id_card
+    - bank_card
+    - bank_account
+    - address
+    - license_plate
+    - student_id
+    - date_time
+    - pii_entity
+
+  # ── Vision objects ─────────────────────────────────────────────
+  # Vision object types that trigger PASS_REDACTED decision
+  vision_redact_categories:
+    - face
+    - id_card
+    - badge
+    - qr_code
+    - barcode
+    - license_plate
+    - signature
+    - stamp
+
+  # ── Thresholds ─────────────────────────────────────────────────
+  # Minimum confidence score for a finding to be considered
+  min_score_threshold: 0.5
+
+
+# ── Redaction rendering modes ──────────────────────────────────────
+redaction:
+  # Default modes per category (overridable per-request)
+  text_pii: black_box
+  face: gaussian_blur
+  qr_code: black_box
+  barcode: black_box
+  signature: solid_fill
+  stamp: solid_fill
+  id_card: black_box
+  bank_card: black_box
+  bank_account: black_box
+  address: black_box
+  student_id: black_box
+  date_time: black_box
+  pii_entity: black_box
+  badge: black_box
+  license_plate: black_box
+  default: black_box
+
+
+# ── Failure handling ───────────────────────────────────────────────
+failure:
+  # fail_open: allow through on provider failure
+  # fail_closed: block/drop on provider failure (conservative)
+  mode: fail_closed
+
+  # Which provider failures should be treated as critical
+  critical_providers:
+    - safety_moderator
+    - pii_detector

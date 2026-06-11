@@ -1,0 +1,115 @@
+policies:
+  - policy_id: privacy.secret.credentials.forbid_training.v1
+    enabled: true
+    priority: 100
+    name_zh: 密钥凭据禁止训练
+    entity_types: [secret, api_key, token, password, credential]
+    decision:
+      sensitivity_level: S4
+      training_admissibility: T3
+      annotation_admissibility: training_forbidden
+      action: drop_or_manual_review
+      dataset_route: exclude_from_training
+      allow_downstream_annotation: false
+      requires_manual_review: true
+      reason_zh: 密钥、令牌、密码或访问凭据一旦进入训练链路会造成安全泄露风险，默认禁止进入训练并要求复核或删除。
+  - policy_id: privacy.strong_identifier.forbid_plaintext_training.v1
+    enabled: true
+    priority: 95
+    name_zh: 强身份标识禁止明文训练
+    entity_types: [id_card, passport, bank_card, bank_account, payment_account]
+    decision:
+      sensitivity_level: S4
+      training_admissibility: T3
+      annotation_admissibility: training_forbidden
+      action: drop_or_manual_review
+      dataset_route: exclude_from_training
+      allow_downstream_annotation: false
+      requires_manual_review: true
+      reason_zh: 身份证件、银行卡和支付账户属于强身份或金融标识，不能以明文进入普通标注或训练链路。
+  - policy_id: privacy.student.education_record.restricted.v1
+    enabled: true
+    priority: 90
+    name_zh: 学生教育记录受限流转
+    entity_types: [education_record, student_id]
+    subject_types: [student, minor, unknown]
+    decision:
+      sensitivity_level: S3
+      training_admissibility: T2
+      annotation_admissibility: restricted_only
+      action: restricted_review
+      dataset_route: restricted_privacy_review_pool
+      allow_downstream_annotation: false
+      requires_manual_review: true
+      reason_zh: 学号、成绩、排名、处分或成长记录等教育记录具有学生身份关联性，默认仅允许进入受限复核池。
+  - policy_id: privacy.guardian.contact.mask.v1
+    enabled: true
+    priority: 88
+    name_zh: 监护人联系方式脱敏使用
+    entity_types: [parent_contact, guardian_contact]
+    decision:
+      sensitivity_level: S3
+      training_admissibility: T2
+      annotation_admissibility: allow_after_redaction
+      action: mask
+      dataset_route: restricted_training_after_redaction
+      allow_downstream_annotation: true
+      requires_manual_review: false
+      reason_zh: 家长或监护人联系方式与未成年人场景强相关，必须脱敏后才可进入受限标注或训练流程。
+  - policy_id: privacy.contact.training.mask.v1
+    enabled: true
+    priority: 70
+    name_zh: 联系方式训练前脱敏
+    entity_types: [phone_number, phone, email, social_account]
+    purposes: [training, annotation, general_training, model_training]
+    decision:
+      sensitivity_level: S2
+      training_admissibility: T1
+      annotation_admissibility: allow_after_redaction
+      action: mask
+      dataset_route: training_after_redaction
+      allow_downstream_annotation: true
+      requires_manual_review: false
+      reason_zh: 联系方式可识别并联系个人，训练或标注前应进行遮蔽处理。
+  - policy_id: privacy.address.generalize.v1
+    enabled: true
+    priority: 65
+    name_zh: 精确地址泛化处理
+    entity_types: [address, location]
+    decision:
+      sensitivity_level: S3
+      training_admissibility: T1
+      annotation_admissibility: allow_after_redaction
+      action: generalize
+      dataset_route: training_after_generalization
+      allow_downstream_annotation: true
+      requires_manual_review: false
+      reason_zh: 精确地址会暴露自然人位置，应泛化到区域级或使用占位符后再进入下游流程。
+  - policy_id: privacy.combined.identity.restricted.v1
+    enabled: true
+    priority: 85
+    name_zh: 组合可识别风险受限流转
+    entity_types: [combined_identity]
+    decision:
+      sensitivity_level: S4
+      training_admissibility: T3
+      annotation_admissibility: restricted_only
+      action: restricted_review
+      dataset_route: restricted_privacy_review_pool
+      allow_downstream_annotation: false
+      requires_manual_review: true
+      reason_zh: 多个身份属性组合会显著提升重识别风险，默认进入受限复核流程并禁止普通训练。
+  - policy_id: privacy.medical.psychology.forbid_training.v1
+    enabled: true
+    priority: 93
+    name_zh: 医疗心理记录禁止普通训练
+    entity_types: [medical_record, psychological_record, health_record]
+    decision:
+      sensitivity_level: S4
+      training_admissibility: T3
+      annotation_admissibility: training_forbidden
+      action: drop_or_manual_review
+      dataset_route: exclude_from_training
+      allow_downstream_annotation: false
+      requires_manual_review: true
+      reason_zh: 医疗、健康和心理记录属于高度敏感个人信息，默认不得进入普通训练链路。

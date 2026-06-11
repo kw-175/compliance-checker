@@ -1,0 +1,464 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ACTION="${1:-start}"
+SESSION="${SESSION:-text-8200}"
+ATTACH="${ATTACH:-false}"
+
+PROJECT="${PROJECT:-/data/kw/compliance-checker}"
+RUN_DIR="${RUN_DIR:-$PROJECT/.tmp/text_8200_stack_tmux}"
+TEXT_WORK_DIR="${TEXT_WORK_DIR:-$PROJECT/temp/text_8200_output}"
+TEXT_UPLOAD_DIR="${TEXT_UPLOAD_DIR:-$PROJECT/temp/text_uploads}"
+
+TEXT_API_HOST="${TEXT_API_HOST:-127.0.0.1}"
+TEXT_API_PORT="${TEXT_API_PORT:-19002}"
+TEXT_PROBE_HOST="${TEXT_PROBE_HOST:-127.0.0.1}"
+
+QWEN35_BASE_URL="${QWEN35_BASE_URL:-http://127.0.0.1:8200/openai/v1}"
+QWEN35_HEALTH_URL="${QWEN35_HEALTH_URL:-http://127.0.0.1:8200/health}"
+QWEN35_MODEL="${QWEN35_MODEL:-Qwen/Qwen3.5-9B}"
+
+START_PII_GATEWAY="${START_PII_GATEWAY:-true}"
+START_QWEN3GUARD_STACK="${START_QWEN3GUARD_STACK:-true}"
+
+PII_ROOT="${PII_ROOT:-$PROJECT/models/compliance-pii}"
+PII_STANZA_RESOURCES_DIR="${PII_STANZA_RESOURCES_DIR:-$PII_ROOT/stanza_resources}"
+STANZA_RESOURCES_DIR="$PII_STANZA_RESOURCES_DIR"
+GLINER_MODEL_DIR="${GLINER_MODEL_DIR:-$PII_ROOT/gliner-pii-large-v1.0}"
+PII_HOST="${PII_HOST:-127.0.0.1}"
+PII_PORT="${PII_PORT:-5002}"
+PII_ENV_ACTIVATE="${PII_ENV_ACTIVATE:-$PROJECT/.venvs/compliance-pii/bin/activate}"
+PII_STANZA_EN_MODEL="${PII_STANZA_EN_MODEL:-en}"
+PII_STANZA_ZH_MODEL="${PII_STANZA_ZH_MODEL:-zh}"
+PII_STANZA_DOWNLOAD_IF_MISSING="${PII_STANZA_DOWNLOAD_IF_MISSING:-false}"
+PII_GLINER_THRESHOLD="${PII_GLINER_THRESHOLD:-0.50}"
+
+QWEN3GUARD_MODEL_PATH="${QWEN3GUARD_MODEL_PATH:-$PROJECT/models/Qwen/Qwen3Guard-Gen-0.6B}"
+QWEN3GUARD_VLLM_HOST="${QWEN3GUARD_VLLM_HOST:-127.0.0.1}"
+QWEN3GUARD_VLLM_PORT="${QWEN3GUARD_VLLM_PORT:-8212}"
+QWEN3GUARD_ADAPTER_HOST="${QWEN3GUARD_ADAPTER_HOST:-127.0.0.1}"
+QWEN3GUARD_ADAPTER_PORT="${QWEN3GUARD_ADAPTER_PORT:-8215}"
+QWEN3GUARD_ENV_ACTIVATE="${QWEN3GUARD_ENV_ACTIVATE:-$PROJECT/qwen-serving/asr-vllm/.venv/bin/activate}"
+GUARD_ADAPTER_ENV_ACTIVATE="${GUARD_ADAPTER_ENV_ACTIVATE:-$PROJECT/.venv/bin/activate}"
+QWEN3GUARD_GPU="${QWEN3GUARD_GPU:-3}"
+QWEN3GUARD_GPU_MEMORY_UTILIZATION="${QWEN3GUARD_GPU_MEMORY_UTILIZATION:-0.08}"
+QWEN3GUARD_MAX_MODEL_LEN="${QWEN3GUARD_MAX_MODEL_LEN:-1536}"
+QWEN3GUARD_MAX_NUM_SEQS="${QWEN3GUARD_MAX_NUM_SEQS:-1}"
+QWEN3GUARD_SERVED_MODEL="${QWEN3GUARD_SERVED_MODEL:-Qwen3Guard-Gen-0.6B}"
+VLLM_CMD="${VLLM_CMD:-vllm}"
+
+TEXT_ENV_ACTIVATE="${TEXT_ENV_ACTIVATE:-$PROJECT/.venv/bin/activate}"
+STARTUP_TIMEOUT_SECONDS="${STARTUP_TIMEOUT_SECONDS:-300}"
+POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-3}"
+
+usage() {
+  cat <<EOF
+Usage: $0 [start|restart|stop|status|attach]
+
+Starts the same local-model-first text compliance stack as start_text_local_stack.sh,
+except that Qwen3.5 is reused from an existing service at port 8200 instead of
+being started by this script. This script does not stop the external 8200 service.
+
+Default stack:
+  pii-gateway -> external qwen35-8200 -> qwen3guard-vllm -> qwen3guard-adapter -> text-api-server
+
+Important overrides:
+  SESSION=$SESSION
+  PROJECT=$PROJECT
+  ATTACH=$ATTACH
+  TEXT_API_HOST=$TEXT_API_HOST
+  TEXT_API_PORT=$TEXT_API_PORT
+  QWEN35_BASE_URL=$QWEN35_BASE_URL
+  QWEN35_HEALTH_URL=$QWEN35_HEALTH_URL
+  QWEN35_MODEL=$QWEN35_MODEL
+  START_PII_GATEWAY=$START_PII_GATEWAY
+  START_QWEN3GUARD_STACK=$START_QWEN3GUARD_STACK
+  PII_PORT=$PII_PORT
+  QWEN3GUARD_VLLM_PORT=$QWEN3GUARD_VLLM_PORT
+  QWEN3GUARD_ADAPTER_PORT=$QWEN3GUARD_ADAPTER_PORT
+  TEXT_WORK_DIR=$TEXT_WORK_DIR
+EOF
+}
+
+log() {
+  printf '[text-8200] %s\n' "$*"
+}
+
+fail() {
+  printf '[text-8200] ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || fail "Missing required command: $1"
+}
+
+q() {
+  printf "%q" "$1"
+}
+
+activation_line() {
+  local command="$1"
+  if [[ -n "$command" ]]; then
+    printf 'source %q\n' "$command"
+  fi
+}
+
+python_bin_for() {
+  local activate="$1"
+  printf '%s\n' "${activate%/activate}/python"
+}
+
+require_python_module() {
+  local activate="$1"
+  local module_name="$2"
+  local python_bin
+  python_bin="$(python_bin_for "$activate")"
+  [[ -x "$python_bin" ]] || fail "Python executable not found for env: $activate"
+  "$python_bin" - <<PY >/dev/null
+import importlib.util
+import sys
+module_name = ${module_name@Q}
+if importlib.util.find_spec(module_name) is None:
+    sys.exit(1)
+PY
+}
+
+require_vllm_in_env() {
+  local activate="$1"
+  require_python_module "$activate" "vllm"
+  bash -lc "source $(q "$activate") && command -v $(q "$VLLM_CMD") >/dev/null 2>&1" || {
+    fail "vLLM command '$VLLM_CMD' is not available after activating env: $activate"
+  }
+}
+
+require_transformers_symbol() {
+  local activate="$1"
+  local symbol_name="$2"
+  local python_bin
+  python_bin="$(python_bin_for "$activate")"
+  [[ -x "$python_bin" ]] || fail "Python executable not found for env: $activate"
+  "$python_bin" - <<PY >/dev/null
+from transformers import ${symbol_name}
+print(${symbol_name})
+PY
+}
+
+probe_http() {
+  local url="$1"
+  curl -sS --connect-timeout 5 --max-time 20 "$url" >/dev/null
+}
+
+wait_for_http() {
+  local label="$1"
+  local url="$2"
+  local deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
+  log "Waiting for $label: $url"
+  while (( SECONDS < deadline )); do
+    if probe_http "$url"; then
+      log "$label is ready"
+      return
+    fi
+    sleep "$POLL_INTERVAL_SECONDS"
+  done
+  fail "Timed out waiting for $label at $url"
+}
+
+session_exists() {
+  tmux has-session -t "$SESSION" >/dev/null 2>&1
+}
+
+write_runner() {
+  local path="$1"
+  local label="$2"
+  local body="$3"
+  mkdir -p "$RUN_DIR"
+  cat > "$path" <<EOF
+#!/usr/bin/env bash
+set -u
+
+$body
+
+status=\$?
+echo
+echo "[$label] Process exited with status \$status. Press Ctrl+D or close this tmux pane to exit."
+exec bash
+EOF
+  chmod +x "$path"
+}
+
+check_qwen35_service() {
+  local response
+  local chat_url="${QWEN35_BASE_URL%/}/chat/completions"
+  probe_http "$QWEN35_HEALTH_URL" || fail "Qwen3.5 health endpoint is not reachable: $QWEN35_HEALTH_URL"
+  response="$(
+    curl -sS --connect-timeout 5 --max-time 60 \
+      "$chat_url" \
+      -H 'Content-Type: application/json' \
+      -d "{\"model\":\"$QWEN35_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: ok\"}],\"temperature\":0,\"max_tokens\":8}"
+  )" || fail "Qwen3.5 chat endpoint is not reachable: $chat_url"
+
+  python - "$response" "$QWEN35_MODEL" <<'PY'
+import json
+import sys
+
+raw = sys.argv[1]
+expected_model = sys.argv[2]
+try:
+    payload = json.loads(raw)
+except Exception as exc:
+    raise SystemExit(f"Qwen3.5 response is not JSON: {exc}; raw={raw[:200]!r}")
+
+if payload.get("code") and payload.get("code") != 0:
+    raise SystemExit(f"Qwen3.5 wrapper returned error: {payload}")
+
+model = str(payload.get("model") or "")
+choices = payload.get("choices") or []
+if model != expected_model:
+    raise SystemExit(f"Qwen3.5 model mismatch: got {model!r}, expected {expected_model!r}")
+if not choices:
+    raise SystemExit(f"Qwen3.5 response has no choices: {payload}")
+print(f"Qwen3.5 check passed: model={model}")
+PY
+}
+
+validate_paths() {
+  [[ -d "$PROJECT" ]] || fail "PROJECT does not exist: $PROJECT"
+  [[ -f "$TEXT_ENV_ACTIVATE" ]] || fail "TEXT_ENV_ACTIVATE does not exist: $TEXT_ENV_ACTIVATE"
+  require_python_module "$TEXT_ENV_ACTIVATE" "fastapi"
+  require_python_module "$TEXT_ENV_ACTIVATE" "httpx"
+  require_python_module "$TEXT_ENV_ACTIVATE" "multipart"
+
+  if [[ "$START_PII_GATEWAY" == "true" ]]; then
+    [[ -d "$STANZA_RESOURCES_DIR" ]] || fail "STANZA_RESOURCES_DIR does not exist: $STANZA_RESOURCES_DIR"
+    [[ -d "$GLINER_MODEL_DIR" ]] || fail "GLINER_MODEL_DIR does not exist: $GLINER_MODEL_DIR"
+    [[ -f "$PII_ENV_ACTIVATE" ]] || fail "PII_ENV_ACTIVATE does not exist: $PII_ENV_ACTIVATE"
+    require_python_module "$PII_ENV_ACTIVATE" "fastapi"
+    require_python_module "$PII_ENV_ACTIVATE" "presidio_analyzer"
+    require_python_module "$PII_ENV_ACTIVATE" "gliner"
+  fi
+
+  if [[ "$START_QWEN3GUARD_STACK" == "true" ]]; then
+    [[ -d "$QWEN3GUARD_MODEL_PATH" ]] || fail "QWEN3GUARD_MODEL_PATH does not exist: $QWEN3GUARD_MODEL_PATH"
+    [[ -f "$QWEN3GUARD_ENV_ACTIVATE" ]] || fail "QWEN3GUARD_ENV_ACTIVATE does not exist: $QWEN3GUARD_ENV_ACTIVATE"
+    [[ -f "$GUARD_ADAPTER_ENV_ACTIVATE" ]] || fail "GUARD_ADAPTER_ENV_ACTIVATE does not exist: $GUARD_ADAPTER_ENV_ACTIVATE"
+    require_python_module "$QWEN3GUARD_ENV_ACTIVATE" "transformers"
+    require_transformers_symbol "$QWEN3GUARD_ENV_ACTIVATE" "GenerationConfig"
+    require_vllm_in_env "$QWEN3GUARD_ENV_ACTIVATE"
+    require_python_module "$GUARD_ADAPTER_ENV_ACTIVATE" "fastapi"
+    require_python_module "$GUARD_ADAPTER_ENV_ACTIVATE" "httpx"
+  fi
+
+  mkdir -p "$TEXT_WORK_DIR" "$TEXT_UPLOAD_DIR" "$RUN_DIR"
+}
+
+write_runners() {
+  local pii_script="$RUN_DIR/pii_gateway.sh"
+  local guard_vllm_script="$RUN_DIR/qwen3guard_vllm.sh"
+  local guard_adapter_script="$RUN_DIR/qwen3guard_adapter.sh"
+  local text_api_script="$RUN_DIR/text_api_server.sh"
+
+  write_runner "$pii_script" "text-8200:pii-gateway" "
+cd $(q "$PROJECT")
+$(activation_line "$PII_ENV_ACTIVATE")
+export CUDA_VISIBLE_DEVICES=\"\"
+export STANZA_RESOURCES_DIR=$(q "$STANZA_RESOURCES_DIR")
+export PII_STANZA_EN_MODEL=$(q "$PII_STANZA_EN_MODEL")
+export PII_STANZA_ZH_MODEL=$(q "$PII_STANZA_ZH_MODEL")
+export PII_STANZA_DOWNLOAD_IF_MISSING=$(q "$PII_STANZA_DOWNLOAD_IF_MISSING")
+export PII_ENABLE_REGEX_RULES=true
+export PII_ENABLE_PRESIDIO=true
+export PII_ENABLE_GLINER=true
+export PII_GLINER_MODEL=$(q "$GLINER_MODEL_DIR")
+export PII_GLINER_THRESHOLD=$(q "$PII_GLINER_THRESHOLD")
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export TOKENIZERS_PARALLELISM=false
+echo '[text-8200] Starting PII Gateway on ${PII_HOST}:${PII_PORT}'
+python -m uvicorn ops.presidio_bilingual.app:app --host $(q "$PII_HOST") --port $(q "$PII_PORT")
+"
+
+  write_runner "$guard_vllm_script" "text-8200:qwen3guard-vllm" "
+cd $(q "$PROJECT")
+$(activation_line "$QWEN3GUARD_ENV_ACTIVATE")
+export CUDA_VISIBLE_DEVICES=$(q "$QWEN3GUARD_GPU")
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export TOKENIZERS_PARALLELISM=false
+export PYTHONNOUSERSITE=1
+unset PYTHONPATH
+echo '[text-8200] Starting Qwen3Guard vLLM on ${QWEN3GUARD_VLLM_HOST}:${QWEN3GUARD_VLLM_PORT}'
+${VLLM_CMD} serve $(q "$QWEN3GUARD_MODEL_PATH") \\
+  --served-model-name $(q "$QWEN3GUARD_SERVED_MODEL") \\
+  --host $(q "$QWEN3GUARD_VLLM_HOST") \\
+  --port $(q "$QWEN3GUARD_VLLM_PORT") \\
+  --dtype auto \\
+  --max-model-len $(q "$QWEN3GUARD_MAX_MODEL_LEN") \\
+  --max-num-seqs $(q "$QWEN3GUARD_MAX_NUM_SEQS") \\
+  --gpu-memory-utilization $(q "$QWEN3GUARD_GPU_MEMORY_UTILIZATION") \\
+  --trust-remote-code
+"
+
+  write_runner "$guard_adapter_script" "text-8200:qwen3guard-adapter" "
+cd $(q "$PROJECT")
+$(activation_line "$GUARD_ADAPTER_ENV_ACTIVATE")
+export QWEN3GUARD_VLLM_URL=http://${QWEN3GUARD_VLLM_HOST}:${QWEN3GUARD_VLLM_PORT}/v1/chat/completions
+export QWEN3GUARD_API_KEY=
+export QWEN3GUARD_MODEL=$(q "$QWEN3GUARD_SERVED_MODEL")
+echo '[text-8200] Starting Qwen3Guard Adapter on ${QWEN3GUARD_ADAPTER_HOST}:${QWEN3GUARD_ADAPTER_PORT}'
+python -m uvicorn ops.qwen3guard_adapter:app --host $(q "$QWEN3GUARD_ADAPTER_HOST") --port $(q "$QWEN3GUARD_ADAPTER_PORT")
+"
+
+  write_runner "$text_api_script" "text-8200:text-api-server" "
+cd $(q "$PROJECT")
+$(activation_line "$TEXT_ENV_ACTIVATE")
+export CUDA_VISIBLE_DEVICES=\"\"
+export COMPLIANCE_WORK_DIR=$(q "$TEXT_WORK_DIR")
+export COMPLIANCE_UPLOAD_DIR=$(q "$TEXT_UPLOAD_DIR")
+export COMPLIANCE_SERVER_HOST=$(q "$TEXT_API_HOST")
+export COMPLIANCE_API_SERVER_PORT=$(q "$TEXT_API_PORT")
+export COMPLIANCE_COMPLIANCE_PROVIDER_MODE=local
+export COMPLIANCE_LOCAL_COMPLIANCE_BASE_URL=$(q "$QWEN35_BASE_URL")
+export COMPLIANCE_LOCAL_COMPLIANCE_API_KEY=
+export COMPLIANCE_LOCAL_COMPLIANCE_MODEL=$(q "$QWEN35_MODEL")
+export COMPLIANCE_LOCAL_COMPLIANCE_TIMEOUT_SECONDS=180
+export COMPLIANCE_LOCAL_COMPLIANCE_MAX_CHARS=4800
+export COMPLIANCE_LOCAL_COMPLIANCE_MAX_TOKENS=1024
+export COMPLIANCE_ENABLE_PRESIDIO=$(q "$START_PII_GATEWAY")
+export COMPLIANCE_PRESIDIO_ANALYZER_ENDPOINT=http://${PII_HOST}:${PII_PORT}/analyze
+export COMPLIANCE_PRESIDIO_LANGUAGE=auto
+export COMPLIANCE_PRESIDIO_SUPPORTED_LANGUAGES=en,zh
+export COMPLIANCE_PRESIDIO_LANGUAGE_FALLBACK=en
+export COMPLIANCE_PRESIDIO_SCORE_THRESHOLD=0.45
+export COMPLIANCE_PRESIDIO_TIMEOUT_SECONDS=60
+export COMPLIANCE_ENABLE_QWEN3GUARD=$(q "$START_QWEN3GUARD_STACK")
+export COMPLIANCE_QWEN3GUARD_ENDPOINT=http://${QWEN3GUARD_ADAPTER_HOST}:${QWEN3GUARD_ADAPTER_PORT}/moderate
+export COMPLIANCE_QWEN3GUARD_MODEL_NAME=$(q "$QWEN3GUARD_SERVED_MODEL")
+export COMPLIANCE_QWEN3GUARD_TIMEOUT_SECONDS=90
+export COMPLIANCE_QWEN3GUARD_MAX_CHARS=8000
+export COMPLIANCE_ENABLE_HARD_CASE_ADJUDICATION=true
+export COMPLIANCE_HARD_CASE_ENDPOINT=
+export COMPLIANCE_HARD_CASE_LOCAL_MODEL_PATH=
+echo '[text-8200] Starting text.api_server on ${TEXT_API_HOST}:${TEXT_API_PORT}'
+python -m uvicorn text.api_server:app --host $(q "$TEXT_API_HOST") --port $(q "$TEXT_API_PORT")
+"
+}
+
+start_tmux_window() {
+  local name="$1"
+  local script="$2"
+  if session_exists; then
+    tmux new-window -t "$SESSION" -n "$name" "$script"
+  else
+    tmux new-session -d -s "$SESSION" -n "$name" "$script"
+  fi
+}
+
+start_session() {
+  require_cmd tmux
+  require_cmd curl
+  validate_paths
+  check_qwen35_service
+
+  if session_exists; then
+    fail "tmux session already exists: $SESSION. Use '$0 attach', '$0 stop', or '$0 restart'."
+  fi
+
+  write_runners
+
+  if [[ "$START_PII_GATEWAY" == "true" ]]; then
+    start_tmux_window "pii-gateway" "$RUN_DIR/pii_gateway.sh"
+  else
+    log "Skipping PII Gateway because START_PII_GATEWAY=false"
+  fi
+
+  log "External Qwen3.5 is ready: ${QWEN35_BASE_URL%/}/chat/completions"
+
+  if [[ "$START_QWEN3GUARD_STACK" == "true" ]]; then
+    start_tmux_window "qwen3guard-vllm" "$RUN_DIR/qwen3guard_vllm.sh"
+    wait_for_http "Qwen3Guard vLLM" "http://${QWEN3GUARD_VLLM_HOST}:${QWEN3GUARD_VLLM_PORT}/v1/models"
+
+    start_tmux_window "qwen3guard-adapter" "$RUN_DIR/qwen3guard_adapter.sh"
+    wait_for_http "Qwen3Guard adapter" "http://${QWEN3GUARD_ADAPTER_HOST}:${QWEN3GUARD_ADAPTER_PORT}/health"
+  else
+    log "Skipping Qwen3Guard stack because START_QWEN3GUARD_STACK=false"
+  fi
+
+  if [[ "$START_PII_GATEWAY" == "true" ]]; then
+    wait_for_http "PII Gateway" "http://${PII_HOST}:${PII_PORT}/openapi.json"
+  fi
+
+  start_tmux_window "text-api-server" "$RUN_DIR/text_api_server.sh"
+  wait_for_http "text.api_server" "http://${TEXT_PROBE_HOST}:${TEXT_API_PORT}/api/v1/health"
+
+  tmux select-window -t "$SESSION:text-api-server"
+
+  cat <<EOF
+Started tmux session: $SESSION
+
+External dependency:
+  Qwen3.5 service       -> ${QWEN35_BASE_URL%/}/chat/completions
+
+Managed windows:
+  pii-gateway           -> ${START_PII_GATEWAY}
+  qwen3guard stack      -> ${START_QWEN3GUARD_STACK}
+  text-api-server       -> http://${TEXT_PROBE_HOST}:${TEXT_API_PORT}/api/v1/health
+
+Useful commands:
+  tmux attach -t $SESSION
+  bash $0 status
+  bash $0 stop
+EOF
+
+  if [[ "$ATTACH" == "true" ]]; then
+    tmux attach -t "$SESSION"
+  fi
+}
+
+stop_session() {
+  require_cmd tmux
+  if session_exists; then
+    tmux kill-session -t "$SESSION"
+    log "Stopped tmux session: $SESSION"
+    log "External Qwen3.5 service on 8200 was not stopped."
+  else
+    log "No tmux session found: $SESSION"
+  fi
+}
+
+status_session() {
+  require_cmd tmux
+  if session_exists; then
+    tmux list-windows -t "$SESSION"
+  else
+    log "No tmux session found: $SESSION"
+    exit 1
+  fi
+}
+
+case "$ACTION" in
+  start)
+    start_session
+    ;;
+  restart)
+    stop_session
+    start_session
+    ;;
+  stop)
+    stop_session
+    ;;
+  status)
+    status_session
+    ;;
+  attach)
+    require_cmd tmux
+    tmux attach -t "$SESSION"
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    usage
+    exit 1
+    ;;
+esac

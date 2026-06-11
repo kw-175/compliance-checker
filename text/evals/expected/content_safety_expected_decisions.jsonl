@@ -1,0 +1,3 @@
+{"doc_id":"unsafe-doc","expected_decision_min":"P4","expected_risk_min":"C3","expected_labels_any":["content.violent","content.violent.encouragement"]}
+{"doc_id":"hard-doc","expected_decision_min":"P3","expected_risk_min":"C2","expected_labels_any":["content.violent","content.violent.graphic_description"]}
+{"doc_id":"safe-doc","expected_decision_max":"P1","expected_risk_max":"C1","expected_labels_any":[]}

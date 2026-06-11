@@ -1,0 +1,10 @@
+sub_operator_id: CSA_009
+display_name: Misleading and manipulative content
+target_labels:
+  - content.misleading
+description: Fraud, misinformation, scams, and manipulative persuasion.
+prompt_profile: misleading_content
+decision_source: gpt52_content_safety
+aliases:
+  - misleading
+  - content.misleading

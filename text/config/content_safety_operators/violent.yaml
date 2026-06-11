@@ -1,0 +1,11 @@
+sub_operator_id: CSA_003
+display_name: Violence and terror
+target_labels:
+  - content.violent
+description: Violence, gore, weapons, terror, and actionable harm instructions.
+prompt_profile: violence_strict
+decision_source: gpt52_content_safety
+aliases:
+  - violence
+  - content.violent
+  - content.violence

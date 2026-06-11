@@ -1,0 +1,10 @@
+sub_operator_id: CSA_008
+display_name: Harmful content involving minors
+target_labels:
+  - content.minor_harmful
+description: Sexual, exploitative, abusive, or otherwise harmful material involving minors.
+prompt_profile: child_safety_strict
+decision_source: gpt52_content_safety
+aliases:
+  - minor_harmful
+  - content.minor_harmful

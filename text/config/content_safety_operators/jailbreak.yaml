@@ -1,0 +1,10 @@
+sub_operator_id: CSA_011
+display_name: Prompt injection and jailbreak
+target_labels:
+  - content.jailbreak
+description: Prompt injection, hidden prompt extraction, and jailbreak attempts.
+prompt_profile: jailbreak_strict
+decision_source: gpt52_content_safety
+aliases:
+  - jailbreak_attempt
+  - content.jailbreak

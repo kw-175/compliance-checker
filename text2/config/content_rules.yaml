@@ -1,0 +1,99 @@
+categories:
+  violence:
+    policy_tag: content.violence
+    risk_type: violence
+    severity: critical
+    keywords:
+      - bomb
+      - bomb-making
+      - terrorism
+      - kill
+      - murder
+      - shooting
+      - 炸弹
+      - 爆炸装置
+      - 恐怖袭击
+      - 杀人
+      - 枪击
+  sexual:
+    policy_tag: content.sexual
+    risk_type: sexual_content
+    severity: high
+    keywords:
+      - porn
+      - explicit sex
+      - sexual service
+      - 淫秽
+      - 色情
+      - 嫖娼
+  hate:
+    policy_tag: content.hate
+    risk_type: hate_speech
+    severity: critical
+    keywords:
+      - exterminate
+      - racial hatred
+      - genocide
+      - 仇恨言论
+      - 歧视某族群
+      - 种族灭绝
+  self_harm:
+    policy_tag: content.self_harm
+    risk_type: self_harm
+    severity: high
+    keywords:
+      - suicide
+      - self harm
+      - end my life
+      - 自杀
+      - 自残
+  political:
+    policy_tag: content.political
+    risk_type: politically_sensitive
+    severity: medium
+    keywords:
+      - protest
+      - censorship
+      - regime change
+      - 政治动员
+      - 抗议组织
+      - 审查制度
+  jailbreak:
+    policy_tag: content.jailbreak
+    risk_type: jailbreak_attempt
+    severity: high
+    keywords:
+      - ignore previous instructions
+      - bypass safety
+      - jailbreak
+      - 绕过安全限制
+      - 忽略之前的指令
+  minors:
+    policy_tag: content.minors
+    risk_type: minors_sensitive
+    severity: high
+    keywords:
+      - minor sexual
+      - underage explicit
+      - 未成年人色情
+      - 儿童暴力
+
+ambiguous_context_markers:
+  - news
+  - article
+  - report
+  - textbook
+  - class
+  - education
+  - research
+  - discussion
+  - quote
+  - fictional
+  - 报道
+  - 新闻
+  - 教材
+  - 课堂
+  - 教学
+  - 研究
+  - 讨论
+  - 引述

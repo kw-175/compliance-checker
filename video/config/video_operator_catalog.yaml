@@ -1,0 +1,25 @@
+version: video-operators-2026.05
+inherits:
+  text_privacy: PII_001-PII_011
+  text_content_safety: CSA_001-CSA_011
+  audio_platform: CMP_001/CMP_002/CMP_008
+  picture_visual_privacy: VPI_001-VPI_011
+families:
+  VVIS_VPI:
+    description: 视频帧视觉隐私算子，继承 picture 的 VPI 算子。
+    source: picture.providers.vision
+  VTXT_PII:
+    description: 视频 OCR/字幕文本隐私算子，继承 text 的 PII 算子。
+    source: text privacy detection
+  VAUD_PII:
+    description: 视频音轨 ASR 文本隐私算子，继承 text/audio 的 PII 算子。
+    source: audio ASR -> text privacy detection
+  VTXT_CSA:
+    description: 视频 OCR/字幕文本内容安全算子，继承 text 的 CSA 算子。
+    source: text content safety detection
+  VAUD_CSA:
+    description: 视频音轨 ASR 内容安全算子，继承 text/audio 的 CSA 算子。
+    source: audio ASR -> text content safety detection
+  VVIS_CSA:
+    description: 视频画面视觉安全算子，继承 picture 的 visual_safety_target_labels。
+    source: picture visual safety detection

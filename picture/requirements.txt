@@ -1,0 +1,25 @@
+# Core dependencies
+fastapi
+uvicorn
+python-multipart>=0.0.9,<1.0
+pydantic
+pydantic-settings
+PyYAML
+httpx
+Pillow
+pytest
+
+# Optional: OpenCV for advanced redaction
+# opencv-python-headless
+
+# Optional: Real provider dependencies
+# paddleocr
+# paddlepaddle
+# presidio-analyzer
+# presidio-anonymizer
+transformers>=5.8.0
+torch
+# ultralytics
+# segment-anything-2
+# boto3
+# PyMuPDF

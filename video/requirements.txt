@@ -1,0 +1,7 @@
+﻿fastapi
+python-multipart>=0.0.9,<1.0
+pillow
+pydantic
+pydantic-settings
+httpx
+pytest

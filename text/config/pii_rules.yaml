@@ -1,0 +1,217 @@
+patterns:
+  person_name_cn:
+    policy_tag: pii.name
+    risk_type: person_name
+    severity: medium
+    regex: "(?:姓名|学生姓名|家长姓名|监护人姓名|班主任姓名)[:：\\s]{1,3}([\\u4e00-\\u9fa5·]{2,4})"
+    capture_group: 1
+    redaction: "<NAME>"
+  person_name_en:
+    policy_tag: pii.name
+    risk_type: person_name
+    severity: medium
+    regex: "(?:Name|Student|Parent|Guardian)[:：\\s]{0,3}([A-Z][a-z]+(?:\\s+[A-Z][a-z]+){0,1})"
+    flags:
+      - IGNORECASE
+    capture_group: 1
+    redaction: "<NAME>"
+  student_name_context_cn:
+    policy_tag: pii.name
+    risk_type: person_name
+    severity: medium
+    regex: "(?:学生|同学)([\\u4e00-\\u9fa5·]{2,4})(?=由|本学期|同学|，|。|\\s)"
+    capture_group: 1
+    redaction: "<NAME>"
+  teacher_name_context_cn:
+    policy_tag: pii.name
+    risk_type: person_name
+    severity: medium
+    regex: "班主任([\\u4e00-\\u9fa5·]{2,4})(?=负责|老师|，|。|\\s)"
+    capture_group: 1
+    redaction: "<NAME>"
+  guardian_name_context_cn:
+    policy_tag: pii.name
+    risk_type: person_name
+    severity: medium
+    regex: "(?:监护人|开户名|妈妈叫|父亲叫|母亲叫)([\\u4e00-\\u9fa5·]{2,4})(?=，|。|\\s)"
+    capture_group: 1
+    redaction: "<NAME>"
+  email:
+    policy_tag: pii.email
+    risk_type: email
+    severity: high
+    regex: "([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,})"
+    capture_group: 1
+    redaction: "<EMAIL>"
+  phone_cn:
+    policy_tag: pii.phone
+    risk_type: phone_number
+    severity: high
+    regex: "((?:\\+?86[-\\s]?)?1[3-9]\\d{9})"
+    capture_group: 1
+    redaction: "<PHONE>"
+  phone_spoken_cn:
+    policy_tag: pii.phone
+    risk_type: phone_number
+    severity: high
+    regex: "(?:手机号|电话|联系电话|联系方式|家长电话)[^，。；;\\n]{0,12}?([零〇○洞Oo幺一二两三四五六七八九0-9\\s\\-—_杠]{11,28})"
+    flags:
+      - IGNORECASE
+    capture_group: 1
+    redaction: "<PHONE>"
+  phone_generic:
+    policy_tag: pii.phone
+    risk_type: phone_number
+    severity: medium
+    regex: "((?:\\+?\\d{1,3}[-\\s])?(?:\\(?0\\d{2,3}\\)?[-\\s]?)\\d{7,8})"
+    capture_group: 1
+    redaction: "<PHONE>"
+  phone_context_generic:
+    policy_tag: pii.phone
+    risk_type: phone_number
+    severity: medium
+    regex: "(?:phone|tel|telephone|mobile|联系电话|联系方式|电话)[:：\\s]{0,8}((?:\\+?\\d[\\d\\s().-]{7,}\\d))"
+    flags:
+      - IGNORECASE
+    capture_group: 1
+    redaction: "<PHONE>"
+  id_card_cn:
+    policy_tag: pii.id_card
+    risk_type: id_card
+    severity: critical
+    regex: "([1-9]\\d{5}(?:18|19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx])"
+    capture_group: 1
+    redaction: "<ID_CARD>"
+  id_card_spoken_cn:
+    policy_tag: pii.id_card
+    risk_type: id_card
+    severity: critical
+    regex: "(?:身份证号|身份证)[^，。；;\\n]{0,18}?([零〇○洞Oo幺一二两三四五六七八九0-9Xx\\s\\-—_杠]{15,40})"
+    flags:
+      - IGNORECASE
+    capture_group: 1
+    redaction: "<ID_CARD>"
+  passport:
+    policy_tag: pii.id_card
+    risk_type: id_card
+    severity: high
+    regex: "(?:护照|passport)[:：\\s]{0,3}([A-Z][0-9A-Z]{6,10})"
+    flags:
+      - IGNORECASE
+    capture_group: 1
+    redaction: "<ID_CARD>"
+  bank_card:
+    policy_tag: pii.bank_card
+    risk_type: bank_card
+    severity: high
+    regex: "((?:(?:62|[4569])\\d[ -]?)(?:\\d[ -]?){14,17})"
+    capture_group: 1
+    redaction: "<BANK_CARD>"
+  student_id:
+    policy_tag: pii.student_id
+    risk_type: student_id
+    severity: high
+    regex: "(?:学号|学生编号|student[_\\s-]?id)[:：\\s]{0,3}([A-Za-z0-9-]{4,20})"
+    flags:
+      - IGNORECASE
+    capture_group: 1
+    redaction: "<STUDENT_ID>"
+  student_id_spoken_cn:
+    policy_tag: pii.student_id
+    risk_type: student_id
+    severity: medium
+    regex: "(?:学号|学生编号|准考证号)[^，。；;\\n]{0,12}?([A-Za-z]?[零〇○洞Oo幺一二两三四五六七八九0-9\\s\\-—_杠]{5,30})"
+    flags:
+      - IGNORECASE
+    capture_group: 1
+    redaction: "<STUDENT_ID>"
+  parent_contact:
+    policy_tag: pii.parent_contact
+    risk_type: parent_contact
+    severity: high
+    regex: "(?:家长(?:联系电话|电话|联系方式)|Parent(?:\\s+Contact|\\s+Phone)?)[:：\\s]{0,3}([+0-9A-Za-z@._ -]{5,40})"
+    flags:
+      - IGNORECASE
+    capture_group: 1
+    redaction: "<PARENT_CONTACT>"
+  social_account:
+    policy_tag: pii.social_account
+    risk_type: social_account
+    severity: medium
+    regex: "(?:微信|微信号|QQ|钉钉|社交账号|social\\s+account)[:：\\s]{0,3}([A-Za-z][A-Za-z0-9_-]{4,19}|[1-9]\\d{5,11})"
+    flags:
+      - IGNORECASE
+    capture_group: 1
+    redaction: "<SOCIAL_ACCOUNT>"
+  payment_account:
+    policy_tag: pii.payment_account
+    risk_type: payment_account
+    severity: high
+    regex: "(?:支付宝|支付账号|收款账号|payment\\s+account)[:：\\s]{0,3}([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+|1[3-9]\\d{9}|[A-Za-z][A-Za-z0-9_-]{5,30})"
+    flags:
+      - IGNORECASE
+    capture_group: 1
+    redaction: "<PAYMENT_ACCOUNT>"
+  address:
+    policy_tag: pii.address
+    risk_type: address
+    severity: high
+    regex: "(?:家庭住址|住址|地址|Address)(?:登记为|为|是|[:：\\s]){0,4}([^，。；;\\n]{4,80}?)(?=，?(?:监护人|家长|联系电话|家校|邮箱)|[。；;\\n]|$)"
+    flags:
+      - IGNORECASE
+    capture_group: 1
+    redaction: "<ADDRESS>"
+  score_record:
+    policy_tag: pii.education_record
+    risk_type: education_record
+    severity: medium
+    regex: "((?:语文|数学|英语|物理|化学|生物|历史|地理|政治)\\s*\\d{1,3}\\s*分(?:[、，,\\s]*(?:语文|数学|英语|物理|化学|生物|历史|地理|政治)\\s*\\d{1,3}\\s*分)+|(?:成绩单|成绩记录|report\\s+card|exam\\s+score))"
+    flags:
+      - IGNORECASE
+    capture_group: 1
+    redaction: "<EDU_RECORD>"
+  disciplinary_record:
+    policy_tag: pii.education_record
+    risk_type: education_record
+    severity: medium
+    regex: "((?:多次迟到|旷课|处分|违纪|漏交作业)[^。；;\\n]{0,30}|(?:写入成长档案|德育处)[^。；;\\n]{0,30})"
+    capture_group: 1
+    redaction: "<EDU_RECORD>"
+  medical_psychological_record:
+    policy_tag: pii.medical_record
+    risk_type: medical_record
+    severity: high
+    regex: "((?:焦虑|抑郁|睡眠差|睡眠不好|胃痛|心理咨询|心理测评|压力评估|校医室|病历|健康随访)[^。；;\\n]{0,40})"
+    capture_group: 1
+    redaction: "<MEDICAL_RECORD>"
+  secret_api_key:
+    policy_tag: pii.secret
+    risk_type: secret
+    severity: critical
+    regex: "((?:sk|pk|ak|api[_-]?key|token|secret)[-_A-Za-z0-9]{8,}|(?:EduPass|Pass|Password|Pwd)[@:_-]?[A-Za-z0-9@#$%^&*._-]{4,})"
+    flags:
+      - IGNORECASE
+    capture_group: 1
+    redaction: "<SECRET>"
+  minor_age:
+    policy_tag: pii.minor_info
+    risk_type: minor_info
+    severity: high
+    regex: "((?:\\d{1,2}\\s*岁|[一二三四五六七八九]年级(?:[一二三四五六七八九十]+班)?|初[一二三四五六七八九][^，。；;\\n]{0,8}))"
+    capture_group: 1
+    redaction: "<MINOR_INFO>"
+
+combination_rules:
+  combined_identity:
+    policy_tag: pii.combined_identity
+    risk_type: combined_identity
+    severity: critical
+    base_types:
+      - person_name
+      - phone_number
+      - id_card
+      - address
+      - student_id
+      - parent_contact
+      - bank_card
+    redaction: "<COMBINED_IDENTITY>"

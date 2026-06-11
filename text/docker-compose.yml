@@ -1,0 +1,48 @@
+# ──────────────────────────────────────────────────────────
+# Text Data Compliance Checker – Docker Compose
+# ──────────────────────────────────────────────────────────
+
+services:
+  # ── OPA (Open Policy Agent) ──────────────────────────────
+  opa:
+    image: openpolicyagent/opa:latest
+    ports:
+      - "8181:8181"
+    volumes:
+      - ./policies:/policies
+    command:
+      - "run"
+      - "--server"
+      - "--addr"
+      - "0.0.0.0:8181"
+      - "/policies/compliance.rego"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8181/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ── Text Compliance Checker ──────────────────────────────
+  text-checker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "9000:9000"
+    environment:
+      - COMPLIANCE_WORK_DIR=/app/compliance_output
+      - COMPLIANCE_OPA_URL=http://opa:8181
+      - COMPLIANCE_OPA_ENABLED=true
+      - COMPLIANCE_QWEN_GUARD_ENABLED=false
+      - COMPLIANCE_OPENLINEAGE_URL=
+    volumes:
+      - ./compliance_output:/app/compliance_output
+      - ./data:/app/data
+    depends_on:
+      opa:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3

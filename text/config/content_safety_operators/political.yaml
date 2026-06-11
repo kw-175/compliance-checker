@@ -1,0 +1,10 @@
+sub_operator_id: CSA_001
+display_name: Political sensitivity
+target_labels:
+  - content.political
+description: Political, public-safety, extremist, and legally sensitive content.
+prompt_profile: political_strict
+decision_source: gpt52_content_safety
+aliases:
+  - political_sensitive
+  - content.political

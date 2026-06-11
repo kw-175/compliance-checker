@@ -1,0 +1,136 @@
+entities:
+  person_name:
+    operator_id: PII_001
+    name_zh: 姓名检测
+    description_zh: 识别人名、学生姓名、家长姓名、教师姓名等可指向自然人的姓名信息。
+    default_sensitivity: S2
+    default_training_admissibility: T1
+    default_action: mask
+    replacement: <PERSON>
+    aliases: [name, student_name, parent_name, teacher_name]
+  phone_number:
+    operator_id: PII_002
+    name_zh: 联系方式检测
+    description_zh: 识别手机号、固定电话、联系方式等可直接联系个人的信息。
+    default_sensitivity: S3
+    default_training_admissibility: T1
+    default_action: mask
+    replacement: <PHONE>
+    aliases: [phone, mobile, contact]
+  email:
+    operator_id: PII_002
+    name_zh: 联系方式检测
+    description_zh: 识别个人邮箱、办公邮箱等可联系或识别个人的信息。
+    default_sensitivity: S2
+    default_training_admissibility: T1
+    default_action: mask
+    replacement: <EMAIL>
+    aliases: [mail, email_address]
+  social_account:
+    operator_id: PII_002
+    name_zh: 联系方式检测
+    description_zh: 识别微信、QQ、钉钉等社交账号信息。
+    default_sensitivity: S2
+    default_training_admissibility: T1
+    default_action: mask
+    replacement: <SOCIAL_ACCOUNT>
+    aliases: [wechat_id, qq_number, social_id]
+  id_card:
+    operator_id: PII_003
+    name_zh: 身份证件检测
+    description_zh: 识别身份证、护照、准考证等强身份标识。
+    default_sensitivity: S4
+    default_training_admissibility: T3
+    default_action: drop_or_manual_review
+    replacement: <ID_CARD>
+    aliases: [id_number, passport, credential_id]
+  address:
+    operator_id: PII_004
+    name_zh: 地址位置检测
+    description_zh: 识别家庭住址、学校住址、精确地址等位置隐私。
+    default_sensitivity: S3
+    default_training_admissibility: T2
+    default_action: generalize
+    replacement: <ADDRESS>
+    aliases: [home_address, location]
+  student_id:
+    operator_id: PII_005
+    name_zh: 学籍与教育记录检测
+    description_zh: 识别学号、学生编号、准考证号等教育身份标识。
+    default_sensitivity: S3
+    default_training_admissibility: T2
+    default_action: mask
+    replacement: <STUDENT_ID>
+    aliases: [student_number, exam_number]
+  education_record:
+    operator_id: PII_005
+    name_zh: 学籍与教育记录检测
+    description_zh: 识别成绩、排名、处分、成长档案等教育记录。
+    default_sensitivity: S3
+    default_training_admissibility: T2
+    default_action: restricted_review
+    replacement: <EDU_RECORD>
+    aliases: [score_record, disciplinary_record, growth_record]
+  parent_contact:
+    operator_id: PII_006
+    name_zh: 监护人与家庭信息检测
+    description_zh: 识别家长联系方式、监护人信息、家庭成员关系等家庭隐私。
+    default_sensitivity: S3
+    default_training_admissibility: T2
+    default_action: mask
+    replacement: <PARENT_CONTACT>
+    aliases: [guardian_contact, family_contact]
+  bank_card:
+    operator_id: PII_007
+    name_zh: 金融与支付信息检测
+    description_zh: 识别银行卡号、银行账户、支付账户等金融信息。
+    default_sensitivity: S4
+    default_training_admissibility: T3
+    default_action: drop_or_manual_review
+    replacement: <BANK_CARD>
+    aliases: [bank_account, payment_account]
+  payment_account:
+    operator_id: PII_007
+    name_zh: 金融与支付信息检测
+    description_zh: 识别支付宝、收款账号、支付账户等金融支付信息。
+    default_sensitivity: S4
+    default_training_admissibility: T3
+    default_action: drop_or_manual_review
+    replacement: <PAYMENT_ACCOUNT>
+    aliases: [alipay_id, payment_id]
+  medical_record:
+    operator_id: PII_008
+    name_zh: 医疗与心理信息检测
+    description_zh: 识别病历、健康状况、心理测评、心理咨询记录等高度敏感信息。
+    default_sensitivity: S4
+    default_training_admissibility: T3
+    default_action: drop_or_manual_review
+    replacement: <MEDICAL_RECORD>
+    aliases: [health_record, psychological_record, psychology_record]
+  secret:
+    operator_id: PII_009
+    name_zh: 密钥与凭据信息检测
+    description_zh: 识别密码、token、API Key、访问密钥等凭据信息。
+    default_sensitivity: S4
+    default_training_admissibility: T3
+    default_action: drop_or_manual_review
+    replacement: <SECRET>
+    aliases: [api_key, token, password, credential]
+  combined_identity:
+    operator_id: PII_010
+    name_zh: 组合可识别风险检测
+    description_zh: 识别多个普通身份属性组合后形成的强可识别个人画像风险。
+    default_sensitivity: S4
+    default_training_admissibility: T3
+    default_action: restricted_review
+    replacement: <COMBINED_IDENTITY>
+    aliases: [combined_pii, profile_identity]
+  minor_info:
+    operator_id: PII_011
+    name_zh: 未成年人隐私检测
+    description_zh: 识别学生、儿童、未成年人相关个人信息及其敏感教育、家庭、心理记录。
+    default_sensitivity: S4
+    default_training_admissibility: T3
+    default_action: restricted_review
+    replacement: <MINOR_INFO>
+    aliases: [student_minor, child_info]

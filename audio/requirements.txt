@@ -1,0 +1,21 @@
+fastapi
+uvicorn
+python-multipart>=0.0.9,<1.0
+pydantic
+pydantic-settings
+PyYAML
+httpx
+pytest
+
+# Optional runtime integrations
+faster-whisper
+pyannote.audio
+presidio-analyzer
+presidio-anonymizer
+stanza
+gliner
+transformers
+torch
+flashtext2
+datasketch
+openlineage-python

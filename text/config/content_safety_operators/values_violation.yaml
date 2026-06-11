@@ -1,0 +1,10 @@
+sub_operator_id: CSA_010
+display_name: Education suitability and values risk
+target_labels:
+  - content.values_violation
+description: Harmful values, manipulation, or education-unsuitable content.
+prompt_profile: education_values
+decision_source: gpt52_content_safety
+aliases:
+  - values_violation
+  - content.values_violation

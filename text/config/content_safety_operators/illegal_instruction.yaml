@@ -1,0 +1,10 @@
+sub_operator_id: CSA_007
+display_name: Illegal instruction
+target_labels:
+  - content.illegal_instruction
+description: Illegal, dangerous, or cyber-abuse instructions.
+prompt_profile: illegal_instruction
+decision_source: gpt52_content_safety
+aliases:
+  - illegal_instruction
+  - content.illegal_instruction

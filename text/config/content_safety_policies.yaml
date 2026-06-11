@@ -1,0 +1,219 @@
+policies:
+  - policy_id: content_minor_harmful_sexualization_zero_tolerance
+    enabled: true
+    labels:
+      - content.minor_harmful.sexualization
+    min_severity: low
+    risk_level_code: C3
+    action: P4
+    training_eligibility: T3
+    dataset_route: exclude_from_training
+    allow_downstream_annotation: false
+    requires_manual_review: false
+    priority: 130
+    reason: Sexualized or exploitative minor content is excluded regardless of scene.
+
+  - policy_id: content_minor_harmful_zero_tolerance
+    enabled: true
+    labels:
+      - content.minor_harmful
+    min_severity: low
+    risk_level_code: C3
+    action: P4
+    training_eligibility: T3
+    dataset_route: exclude_from_training
+    allow_downstream_annotation: false
+    requires_manual_review: false
+    priority: 120
+    reason: Harmful content involving minors is excluded regardless of context.
+
+  - policy_id: content_minor_harmful_imitation_exclude
+    enabled: true
+    labels:
+      - content.minor_harmful.imitation
+    min_severity: medium
+    risk_level_code: C3
+    action: P4
+    training_eligibility: T3
+    dataset_route: exclude_from_training
+    allow_downstream_annotation: false
+    requires_manual_review: false
+    priority: 118
+    reason: Content that may induce minors to imitate dangerous behavior is excluded.
+
+  - policy_id: content_self_harm_encouragement_exclude
+    enabled: true
+    labels:
+      - content.self_harm
+    min_severity: medium
+    risk_level_code: C3
+    action: P4
+    training_eligibility: T3
+    dataset_route: exclude_from_training
+    allow_downstream_annotation: false
+    requires_manual_review: false
+    priority: 110
+    reason: Self-harm encouragement or instructions must not enter annotation or training.
+
+  - policy_id: content_safety_minor_audience_strict
+    enabled: true
+    min_severity: medium
+    audience: minor
+    risk_level_code: C3
+    action: P4
+    training_eligibility: T3
+    dataset_route: exclude_from_training
+    allow_downstream_annotation: false
+    requires_manual_review: false
+    priority: 105
+    reason: Medium-or-higher content safety risk for minors is routed strictly.
+
+  - policy_id: content_violent_actionable_exclude
+    enabled: true
+    labels:
+      - content.violent
+      - content.violent.encouragement
+      - content.illegal_instruction
+      - content.illegal_instruction.step_by_step
+    min_severity: high
+    risk_level_code: C3
+    action: P4
+    training_eligibility: T3
+    dataset_route: exclude_from_training
+    allow_downstream_annotation: false
+    requires_manual_review: false
+    priority: 96
+    reason: High-risk violent, weapons, terrorism, or illegal actionable content is excluded.
+
+  - policy_id: content_violent_graphic_review
+    enabled: true
+    labels:
+      - content.violent.graphic_description
+    min_severity: medium
+    risk_level_code: C2
+    action: P3
+    training_eligibility: T2
+    dataset_route: safety_review_or_eval_only
+    allow_downstream_annotation: false
+    requires_manual_review: true
+    priority: 85
+    reason: Graphic violence requires review even when non-actionable.
+
+  - policy_id: content_pornographic_high_risk_exclude
+    enabled: true
+    labels:
+      - content.pornographic
+    min_severity: high
+    risk_level_code: C3
+    action: P4
+    training_eligibility: T3
+    dataset_route: exclude_from_training
+    allow_downstream_annotation: false
+    requires_manual_review: false
+    priority: 94
+    reason: High-risk pornographic content is excluded from dataset annotation and training.
+
+  - policy_id: content_hate_high_risk_exclude
+    enabled: true
+    labels:
+      - content.hate
+    min_severity: high
+    risk_level_code: C3
+    action: P4
+    training_eligibility: T3
+    dataset_route: exclude_from_training
+    allow_downstream_annotation: false
+    requires_manual_review: false
+    priority: 94
+    reason: High-risk hate or discriminatory content is excluded from dataset use.
+
+  - policy_id: content_jailbreak_training_exclude
+    enabled: true
+    labels:
+      - content.jailbreak
+    min_severity: high
+    risk_level_code: C3
+    action: P4
+    training_eligibility: T3
+    dataset_route: exclude_from_training
+    allow_downstream_annotation: false
+    requires_manual_review: false
+    priority: 94
+    reason: High-risk jailbreak or prompt-injection content is excluded from training datasets.
+
+  - policy_id: content_jailbreak_prompt_injection_exclude
+    enabled: true
+    labels:
+      - content.jailbreak.prompt_injection
+    min_severity: medium
+    risk_level_code: C3
+    action: P4
+    training_eligibility: T3
+    dataset_route: exclude_from_training
+    allow_downstream_annotation: false
+    requires_manual_review: false
+    priority: 93
+    reason: Prompt-injection and system-prompt exfiltration attempts are excluded from training datasets.
+
+  - policy_id: content_safety_high_risk_exclude
+    enabled: true
+    labels:
+      - content.violent
+      - content.pornographic
+      - content.hate
+      - content.illegal_instruction
+      - content.jailbreak
+    min_severity: high
+    risk_level_code: C3
+    action: P4
+    training_eligibility: T3
+    dataset_route: exclude_from_training
+    allow_downstream_annotation: false
+    requires_manual_review: false
+    priority: 90
+    reason: High-confidence unsafe content should not enter downstream annotation.
+
+  - policy_id: content_safety_contextual_review
+    enabled: true
+    context_type_any_of:
+      - education
+      - research
+      - news
+      - legal_case
+      - literary_or_fictional
+      - quotation
+      - safety_education
+      - public_interest
+    min_severity: low
+    risk_level_code: C2
+    action: P3
+    training_eligibility: T2
+    dataset_route: safety_review_or_eval_only
+    allow_downstream_annotation: false
+    requires_manual_review: true
+    priority: 70
+    reason: Context-sensitive unsafe recalls may be legitimate but require review before dataset use.
+
+  - policy_id: content_safety_medium_review
+    enabled: true
+    min_severity: medium
+    risk_level_code: C2
+    action: P3
+    training_eligibility: T2
+    dataset_route: safety_review_or_eval_only
+    allow_downstream_annotation: false
+    requires_manual_review: true
+    priority: 50
+    reason: Context-sensitive content safety risk requires review before use.
+
+  - policy_id: content_safety_low_restricted_review
+    enabled: true
+    min_severity: low
+    risk_level_code: C1
+    action: P2
+    training_eligibility: T1
+    dataset_route: restricted_training_after_review
+    allow_downstream_annotation: true
+    requires_manual_review: false
+    priority: 10
+    reason: Low-risk content safety signal can proceed only with restricted dataset governance.

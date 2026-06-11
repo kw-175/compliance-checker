@@ -1,0 +1,68 @@
+{
+  "doc_id": "privacy_compliance_11_targets_single_text",
+  "source_type": "synthetic_education_dataset_test",
+  "operator_id": "CMP_001",
+  "text": "某市实验中学准备将一批班级成长档案整理成教育数据集，以下是班主任从家校平台导出的单条备注，需在入库前做隐私合规检测：七年级三班学生李雨晨由班主任张明负责跟进，学号为 STU2026031508，身份证号为 110101201208153219，学生本人手机号 13800138000，常用邮箱 liyuchen.student@example.edu。学生家庭住址登记为北京市海淀区知春路 18 号 3 单元 502 室，监护人王丽，家长联系电话 13900139000，家校沟通邮箱 parent.wangli@example.com。阶段性学习记录显示，李雨晨本学期语文 82 分、数学 76 分、英语 88 分，因多次迟到被写入成长档案，德育处安排过一次谈话。午餐和校服缴费备注中误录了银行卡号 6222020202020202020，开户名王丽。校医室心理健康随访记录写有：该生近期焦虑、睡眠差、上课注意力下降，建议转介心理咨询。平台运维备注还误把测试密钥 sk-test-edu-1234567890abcdef 和临时登录口令 EduPass@2026 写入了导出文件。综合来看，姓名、12 岁年龄、性别、班级、学号、身份证号、住址、手机号、家长联系方式、成绩、行为记录和健康记录共同出现，已经可以唯一定位一名未成年人学生。",
+  "metadata": {
+    "language": "zh",
+    "purpose": "single-text privacy compliance coverage test",
+    "synthetic": true
+  },
+  "expected_coverage": [
+    {
+      "operator_id": "PII_001",
+      "target": "person_name",
+      "example": "李雨晨、张明、王丽"
+    },
+    {
+      "operator_id": "PII_002",
+      "target": "phone_number_or_email",
+      "example": "13800138000、liyuchen.student@example.edu"
+    },
+    {
+      "operator_id": "PII_003",
+      "target": "id_card",
+      "example": "110101201208153219"
+    },
+    {
+      "operator_id": "PII_004",
+      "target": "address",
+      "example": "北京市海淀区知春路 18 号 3 单元 502 室"
+    },
+    {
+      "operator_id": "PII_005",
+      "target": "student_id_or_education_record",
+      "example": "STU2026031508、成绩、迟到和成长档案"
+    },
+    {
+      "operator_id": "PII_006",
+      "target": "parent_contact",
+      "example": "监护人王丽、13900139000"
+    },
+    {
+      "operator_id": "PII_007",
+      "target": "bank_card",
+      "example": "6222020202020202020"
+    },
+    {
+      "operator_id": "PII_008",
+      "target": "medical_record",
+      "example": "焦虑、睡眠差、心理咨询"
+    },
+    {
+      "operator_id": "PII_009",
+      "target": "secret",
+      "example": "sk-test-edu-1234567890abcdef、EduPass@2026"
+    },
+    {
+      "operator_id": "PII_010",
+      "target": "combined_identity",
+      "example": "姓名、年龄、班级、住址、证件号、手机号组合"
+    },
+    {
+      "operator_id": "PII_011",
+      "target": "minor_info",
+      "example": "12 岁未成年人学生身份与家庭信息"
+    }
+  ]
+}

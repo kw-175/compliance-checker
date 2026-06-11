@@ -1,0 +1,55 @@
+# ──────────────────────────────────────────────────────────────
+# 默认策略 Profile — default.yaml
+# ──────────────────────────────────────────────────────────────
+#
+# 适用场景：通用数据合规处理
+# 可通过拷贝此文件并修改阈值来创建场景化 Profile，例如：
+#   - legal.yaml       (法律文书：PII 阈值更严格)
+#   - social_media.yaml (社媒评论：安全阈值更严格)
+#   - pretrain.yaml     (预训练语料：许可证阈值更严格)
+#   - customer_qa.yaml  (客服质检：隐私阈值更严格)
+# ──────────────────────────────────────────────────────────────
+
+profile_name: "default"
+description: "通用默认策略 Profile，适用于大多数数据合规处理场景"
+
+# ── 各维度阈值 ──────────────────────────────────────────────
+# 含义：当检测信号达到或超过阈值时，对应维度评分降低
+
+# 密钥泄露：有泄露 → 直接 0 分
+secret_threshold: 0.0
+
+# 安全审核
+safety_threshold_unsafe: 0.0        # unsafe → 0 分
+safety_threshold_controversial: 0.5 # controversial → 0.5 分
+
+# 隐私 (PII)
+privacy_high_threshold: 5           # PII 实体 > 5 → 低分
+privacy_low_threshold: 0            # PII 实体 > 0 → 中等分
+
+# 许可证合规
+compliance_copyleft_threshold: 0    # 有 copyleft → 低分
+
+# 文本扫描
+text_scan_high_threshold: 20        # 命中 > 20 → 低分
+text_scan_low_threshold: 5          # 命中 > 5 → 中等分
+
+# ── 决策映射阈值 ────────────────────────────────────────────
+# 最低维度分 → 决策映射
+reject_below: 0.0                   # min_score <= 0.0 → REJECT
+quarantine_below: 0.3               # min_score <= 0.3 → QUARANTINE
+review_below: 0.6                   # min_score <= 0.6 → REVIEW
+                                    # min_score > 0.6  → ALLOW
+
+# ── 维度权重 ────────────────────────────────────────────────
+dimension_weights:
+  secrets: 1.0
+  safety: 1.0
+  privacy: 1.0
+  compliance: 1.0
+  text_scan: 1.0
+
+# ── 失败处理策略 ────────────────────────────────────────────
+# fail_closed: 步骤失败时趋向保守（上抬风险、阻止放行）
+# fail_open:   步骤失败时趋向放行（继续流程、不上抬风险）
+failure_policy: "fail_closed"

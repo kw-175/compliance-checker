@@ -1,0 +1,10 @@
+sub_operator_id: CSA_006
+display_name: Self-harm and suicide
+target_labels:
+  - content.self_harm
+description: Self-harm, suicide ideation, encouragement, and instructions.
+prompt_profile: self_harm_strict
+decision_source: gpt52_content_safety
+aliases:
+  - self_harm
+  - content.self_harm

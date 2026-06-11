@@ -1,0 +1,241 @@
+labels:
+  content.political:
+    name: Political and public-safety sensitivity
+    risk_type: political_sensitive
+    default_policy_tag: content.political
+    default_severity: high
+    description: Political, public-safety, extremist, or legally sensitive material that requires careful review.
+    aliases:
+      - political_sensitive
+      - political
+      - content.political_sensitive
+  content.pornographic:
+    name: Pornographic or vulgar sexual content
+    risk_type: pornographic_content
+    default_policy_tag: content.pornographic
+    default_severity: high
+    description: Pornographic, explicit sexual, or vulgar sexualized content.
+    aliases:
+      - sexual
+      - pornography
+      - pornographic_content
+      - content.sexual
+  content.pornographic.explicit:
+    name: Explicit pornographic content
+    risk_type: pornographic_content
+    default_policy_tag: content.pornographic.explicit
+    default_severity: high
+    parent_label: content.pornographic
+    description: Explicit sexual acts, pornographic descriptions, or sexual services.
+    aliases:
+      - explicit_sexual_content
+      - pornographic_explicit
+  content.violent:
+    name: Violence, weapons, terrorism, or gore
+    risk_type: violence
+    default_policy_tag: content.violent
+    default_severity: high
+    description: Violence, gore, weapons, terrorism, or actionable harm instructions.
+    aliases:
+      - violence
+      - violent_content
+      - terrorism
+      - weapon
+      - content.violence
+  content.violent.encouragement:
+    name: Violence encouragement or actionable harm
+    risk_type: violence
+    default_policy_tag: content.violent.encouragement
+    default_severity: high
+    parent_label: content.violent
+    description: Encouragement, operational instruction, or facilitation of violence, weapons, terrorism, or physical harm.
+    aliases:
+      - violent_encouragement
+      - actionable_violence
+      - content.violence.encouragement
+  content.violent.graphic_description:
+    name: Graphic violence or gore
+    risk_type: violence
+    default_policy_tag: content.violent.graphic_description
+    default_severity: medium
+    parent_label: content.violent
+    description: Graphic depictions of injury, gore, or violent aftermath.
+    aliases:
+      - graphic_violence
+      - gore
+  content.hate:
+    name: Hate or discrimination
+    risk_type: hate_speech
+    default_policy_tag: content.hate
+    default_severity: high
+    description: Attacks, demeaning claims, or exclusion based on protected attributes.
+    aliases:
+      - hate
+      - hate_speech
+      - discrimination
+      - content.hate_speech
+  content.hate.group_attack:
+    name: Protected-group attack
+    risk_type: hate_speech
+    default_policy_tag: content.hate.group_attack
+    default_severity: high
+    parent_label: content.hate
+    description: Attacks, dehumanization, exclusion, or hateful claims against protected groups.
+    aliases:
+      - hate_group_attack
+      - protected_group_attack
+  content.harassment:
+    name: Harassment, insult, or bullying
+    risk_type: harassment
+    default_policy_tag: content.harassment
+    default_severity: medium
+    description: Abusive, insulting, humiliating, threatening, or bullying language.
+    aliases:
+      - harassment
+      - bullying
+      - insult
+      - abuse
+  content.harassment.shaming:
+    name: Shaming or bullying
+    risk_type: harassment
+    default_policy_tag: content.harassment.shaming
+    default_severity: medium
+    parent_label: content.harassment
+    description: Humiliation, bullying, public shaming, or targeted insult.
+    aliases:
+      - shaming
+      - bullying
+  content.self_harm:
+    name: Self-harm or suicide
+    risk_type: self_harm
+    default_policy_tag: content.self_harm
+    default_severity: critical
+    description: Self-harm, suicide ideation, encouragement, or instructions.
+    aliases:
+      - self_harm
+      - suicide
+      - content.selfharm
+  content.self_harm.encouragement:
+    name: Self-harm encouragement or instruction
+    risk_type: self_harm
+    default_policy_tag: content.self_harm.encouragement
+    default_severity: critical
+    parent_label: content.self_harm
+    description: Encouragement, instruction, or facilitation of self-harm or suicide.
+    aliases:
+      - self_harm_encouragement
+      - suicide_instruction
+  content.illegal_instruction:
+    name: Illegal or dangerous instructions
+    risk_type: illegal_instruction
+    default_policy_tag: content.illegal_instruction
+    default_severity: high
+    description: Actionable illegal, dangerous, cyber-abuse, or controlled-substance instructions.
+    aliases:
+      - illegal_instruction
+      - illegal
+      - dangerous_instruction
+      - cyber_abuse
+  content.illegal_instruction.step_by_step:
+    name: Step-by-step illegal or dangerous instruction
+    risk_type: illegal_instruction
+    default_policy_tag: content.illegal_instruction.step_by_step
+    default_severity: high
+    parent_label: content.illegal_instruction
+    description: Actionable procedural guidance for illegal, dangerous, or abusive conduct.
+    aliases:
+      - illegal_step_by_step
+      - dangerous_step_by_step
+  content.minor_harmful:
+    name: Harmful content involving minors
+    risk_type: minor_harmful
+    default_policy_tag: content.minor_harmful
+    default_severity: critical
+    description: Sexual, exploitative, abusive, or otherwise harmful content involving minors.
+    aliases:
+      - minor_harmful
+      - minors_sensitive
+      - child_safety
+      - content.minors_sensitive
+  content.minor_harmful.imitation:
+    name: Minor harmful imitation risk
+    risk_type: minor_harmful
+    default_policy_tag: content.minor_harmful.imitation
+    default_severity: high
+    parent_label: content.minor_harmful
+    description: Content that encourages or may induce minors to imitate dangerous, harmful, or exploitative behavior.
+    aliases:
+      - minor_imitation
+      - child_imitation_risk
+  content.minor_harmful.sexualization:
+    name: Sexualized or exploitative minor content
+    risk_type: minor_harmful
+    default_policy_tag: content.minor_harmful.sexualization
+    default_severity: critical
+    parent_label: content.minor_harmful
+    description: Sexual, exploitative, or abusive content involving minors.
+    aliases:
+      - minor_sexualization
+      - child_sexual_safety
+  content.misleading:
+    name: Misleading or manipulative content
+    risk_type: misleading
+    default_policy_tag: content.misleading
+    default_severity: medium
+    description: Fraud, impersonation, false claims, manipulative persuasion, or harmful misinformation.
+    aliases:
+      - misleading
+      - misinformation
+      - fraud
+      - scam
+  content.misleading.pseudo_authority:
+    name: Pseudo-authority or education fraud
+    risk_type: misleading
+    default_policy_tag: content.misleading.pseudo_authority
+    default_severity: medium
+    parent_label: content.misleading
+    description: Fake authority, fraudulent education claims, exam leaks, or manipulative false credentials.
+    aliases:
+      - pseudo_authority
+      - education_fraud
+  content.values_violation:
+    name: Value-alignment or education suitability risk
+    risk_type: values_violation
+    default_policy_tag: content.values_violation
+    default_severity: medium
+    description: Content unsuitable for education data due to harmful values, manipulation, or social risk.
+    aliases:
+      - values_violation
+      - education_unsuitable
+      - social_risk
+  content.values_violation.manipulation:
+    name: Manipulative education value risk
+    risk_type: values_violation
+    default_policy_tag: content.values_violation.manipulation
+    default_severity: medium
+    parent_label: content.values_violation
+    description: Manipulative, coercive, or harmful value guidance unsuitable for education datasets.
+    aliases:
+      - manipulation
+      - coercive_persuasion
+  content.jailbreak:
+    name: Prompt injection or jailbreak
+    risk_type: jailbreak_attempt
+    default_policy_tag: content.jailbreak
+    default_severity: high
+    description: Attempts to bypass safety rules, reveal hidden prompts, or manipulate model behavior.
+    aliases:
+      - jailbreak
+      - jailbreak_attempt
+      - prompt_injection
+      - prompt_attack
+  content.jailbreak.prompt_injection:
+    name: Prompt injection or system-prompt exfiltration
+    risk_type: jailbreak_attempt
+    default_policy_tag: content.jailbreak.prompt_injection
+    default_severity: high
+    parent_label: content.jailbreak
+    description: Attempts to override instructions, bypass safety, or extract hidden prompts.
+    aliases:
+      - prompt_injection
+      - system_prompt_exfiltration

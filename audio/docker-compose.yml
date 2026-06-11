@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  audio-compliance:
+    # 使用仓库根目录上下文构建音频服务镜像。
+    build:
+      context: ..
+      dockerfile: audio/Dockerfile
+    # 暴露 API 服务端口。
+    ports:
+      - "19001:19001"
+    # 通过环境变量关闭重型依赖，便于快速本地联调。
+    environment:
+      COMPLIANCE_WORK_DIR: /data/audio-output
+      COMPLIANCE_OPA_ENABLED: "false"
+      COMPLIANCE_QWEN_ASR_ENABLED: "false"
+      COMPLIANCE_PYANNOTE_ENABLED: "false"
+      COMPLIANCE_QWEN_GUARD_ENABLED: "false"
+    # 挂载数据目录，保留输出产物。
+    volumes:
+      - ./data:/data

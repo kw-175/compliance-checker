@@ -1,0 +1,26 @@
+# Regex patterns for Hyperscan / re-fallback text scanning
+# Format:  pattern_name: regex_pattern
+
+# ── Email / URL / IP ──
+email_address: "[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\\.[a-zA-Z0-9-.]+"
+url: "https?://[^\\s<>\"'\\)\\]]*"
+ipv4_address: "\\b(?:(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)\\.){3}(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)\\b"
+
+# ── PII patterns ──
+us_ssn: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+credit_card_visa: "\\b4\\d{3}[- ]?\\d{4}[- ]?\\d{4}[- ]?\\d{4}\\b"
+credit_card_master: "\\b5[1-5]\\d{2}[- ]?\\d{4}[- ]?\\d{4}[- ]?\\d{4}\\b"
+phone_us: "\\b(?:\\+1[- ]?)?\\(?\\d{3}\\)?[- ]?\\d{3}[- ]?\\d{4}\\b"
+phone_cn: "\\b(?:\\+86[- ]?)?1[3-9]\\d{9}\\b"
+cn_id_card: "\\b\\d{6}(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx]\\b"
+
+# ── Secrets / Keys ──
+aws_access_key: "\\bAKIA[0-9A-Z]{16}\\b"
+aws_secret_key: "\\b[A-Za-z0-9/+=]{40}\\b"
+github_token: "\\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}\\b"
+generic_api_key: "(?i)(?:api[_-]?key|apikey|api[_-]?secret)[\"'\\s:=]+[\"']?[A-Za-z0-9_\\-]{16,}[\"']?"
+private_key_header: "-----BEGIN (?:RSA|EC|DSA|OPENSSH)? ?PRIVATE KEY-----"
+
+# ── Sensitive Chinese patterns ──
+cn_bank_card: "\\b(?:62|60|35|37|4[0-9]|5[1-5])\\d{14,17}\\b"
+cn_passport: "\\b[EeGg]\\d{8}\\b"

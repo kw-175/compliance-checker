@@ -1,0 +1,10 @@
+sub_operator_id: CSA_004
+display_name: Hate and discrimination
+target_labels:
+  - content.hate
+description: Hate speech, discrimination, and protected-attribute attacks.
+prompt_profile: hate_speech
+decision_source: gpt52_content_safety
+aliases:
+  - hate_speech
+  - content.hate

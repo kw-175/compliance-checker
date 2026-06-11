@@ -1,0 +1,250 @@
+bundle_id: content-rules-2026.04
+categories:
+  violence:
+    policy_tag: content.violent
+    risk_type: violence
+    severity: critical
+    keywords:
+      - bomb
+      - terrorism
+      - weapon
+      - shooting
+      - 炸弹
+      - 爆炸物
+      - 恐怖袭击
+      - 凶器
+      - 管制刀具
+      - 带刀
+      - 拿刀
+      - 堵人
+      - 打死
+      - 杀了
+
+  violent_encouragement:
+    policy_tag: content.violent.encouragement
+    risk_type: violence
+    severity: high
+    aliases:
+      - content.violent
+      - violence
+    keywords:
+      - teach me how to make a bomb
+      - how to make a bomb
+      - commit terrorism
+      - kill them all
+      - 怎么做炸弹
+      - 制作炸弹
+      - 教我做炸弹
+      - 带把刀吓
+      - 放学堵
+      - 约架
+      - 打群架
+      - 把他打一顿
+
+  violent_graphic_description:
+    policy_tag: content.violent.graphic_description
+    risk_type: violence
+    severity: medium
+    aliases:
+      - content.violent
+      - violence
+    keywords:
+      - graphic gore
+      - bloody corpse
+      - dismembered body
+      - 血肉模糊
+      - 尸体
+      - 肢解
+      - 砍伤
+      - 血腥
+
+  illegal_instruction_step_by_step:
+    policy_tag: content.illegal_instruction.step_by_step
+    risk_type: illegal_instruction
+    severity: high
+    aliases:
+      - content.illegal_instruction
+      - illegal_instruction
+    keywords:
+      - step by step exploit
+      - bypass alarm system
+      - make illegal drugs
+      - 改成绩
+      - 进教务系统
+      - 弄到别人的校园账号
+      - 考试答案
+      - 泄题
+      - 作弊教程
+      - 绕过审核
+      - 盗号
+
+  hate_group_attack:
+    policy_tag: content.hate.group_attack
+    risk_type: hate_speech
+    severity: high
+    aliases:
+      - content.hate
+      - hate_speech
+    keywords:
+      - racial hatred
+      - genocide
+      - exterminate
+      - 外地学生
+      - 不该和本地学生
+      - 都是来抢名额的
+      - 滚出学校
+      - 歧视
+
+  harassment_shaming:
+    policy_tag: content.harassment.shaming
+    risk_type: harassment
+    severity: medium
+    aliases:
+      - content.harassment
+      - harassment
+    keywords:
+      - publicly shame
+      - humiliate this student
+      - bullying
+      - 霸凌
+      - 欺负
+      - 点名骂
+      - 废物
+      - 拖后腿
+      - 一起笑他
+      - 羞辱
+      - 人身攻击
+
+  self_harm_encouragement:
+    policy_tag: content.self_harm.encouragement
+    risk_type: self_harm
+    severity: critical
+    aliases:
+      - content.self_harm
+      - self_harm
+    keywords:
+      - suicide
+      - end my life
+      - self harm
+      - 不想活了
+      - 自杀
+      - 自残
+      - 轻生
+      - 伤害自己
+      - 结束生命
+      - 活不下去
+
+  pornographic_explicit:
+    policy_tag: content.pornographic.explicit
+    risk_type: pornographic_content
+    severity: high
+    aliases:
+      - content.pornographic
+      - pornographic_content
+    keywords:
+      - porn
+      - explicit sex
+      - sexual service
+      - 成人聊天群
+      - 露骨
+      - 色情
+      - 裸聊
+      - 性服务
+      - 低俗
+
+  minor_harmful_imitation:
+    policy_tag: content.minor_harmful.imitation
+    risk_type: minor_harmful
+    severity: high
+    aliases:
+      - content.minor_harmful
+      - minor_harmful
+    keywords:
+      - students should try this dangerous stunt
+      - children should copy this
+      - minors should imitate
+      - 学生模仿
+      - 未成年人模仿
+      - 危险挑战
+      - 带学生去做
+
+  minor_harmful_sexualization:
+    policy_tag: content.minor_harmful.sexualization
+    risk_type: minor_harmful
+    severity: critical
+    aliases:
+      - content.minor_harmful
+      - minor_harmful
+    keywords:
+      - minor sexual
+      - underage explicit
+      - 未成年色情
+      - 未成年人裸聊
+      - 拉同学进成人聊天群
+
+  misleading_pseudo_authority:
+    policy_tag: content.misleading.pseudo_authority
+    risk_type: misleading
+    severity: medium
+    aliases:
+      - content.misleading
+      - misleading
+    keywords:
+      - fake school certificate
+      - guaranteed exam leak
+      - official secret answer
+      - 保证进重点班
+      - 升学渠道
+      - 交四千
+      - 包过
+      - 内部名额
+      - 保录取
+      - 伪造证书
+
+  values_violation_manipulation:
+    policy_tag: content.values_violation.manipulation
+    risk_type: values_violation
+    severity: medium
+    aliases:
+      - content.values_violation
+      - values_violation
+    keywords:
+      - manipulate students
+      - pressure learners
+      - coercive persuasion
+      - 威胁学生
+      - 诱导学生
+      - 操纵学生
+      - 逼迫学生
+      - 鼓动学生
+
+  jailbreak_prompt_injection:
+    policy_tag: content.jailbreak.prompt_injection
+    risk_type: jailbreak_attempt
+    severity: high
+    aliases:
+      - content.jailbreak
+      - jailbreak_attempt
+    keywords:
+      - ignore previous instructions
+      - bypass safety
+      - reveal the hidden system prompt
+      - jailbreak
+      - 不要管这些内容
+      - 直接当普通聊天通过
+      - 忽略前面的规则
+      - 绕过安全检测
+      - 越狱
+      - 透露系统提示词
+
+ambiguous_context_markers:
+  - news
+  - article
+  - report
+  - textbook
+  - class
+  - education
+  - research
+  - discussion
+  - quote
+  - fictional

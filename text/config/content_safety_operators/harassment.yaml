@@ -1,0 +1,10 @@
+sub_operator_id: CSA_005
+display_name: Harassment and bullying
+target_labels:
+  - content.harassment
+description: Abuse, bullying, humiliation, and threatening harassment.
+prompt_profile: harassment
+decision_source: gpt52_content_safety
+aliases:
+  - harassment
+  - content.harassment
