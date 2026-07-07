@@ -1,6 +1,0 @@
-{"doc_id": "test-001", "text": "This is a normal safe document with no issues.", "source": "test_file_1.txt"}
-{"doc_id": "test-002", "text": "Contact John Smith at john.smith@example.com or call 555-123-4567. His SSN is 123-45-6789.", "source": "test_file_2.txt"}
-{"doc_id": "test-003", "text": "This document contains terrorism related content about bomb_making and weapon_manufacturing techniques.", "source": "test_file_3.txt"}
-{"doc_id": "test-004", "text": "Licensed under GPL-3.0. All rights reserved. This is copyrighted_material.", "source": "test_file_4.txt"}
-{"doc_id": "test-005", "text": "AWS API key: AKIAIOSFODNN7EXAMPLE, github token: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh1234", "source": "test_file_5.txt"}
-{"doc_id": "test-006", "text": "This is a normal safe document with no issues.", "source": "test_file_6_dup.txt"}

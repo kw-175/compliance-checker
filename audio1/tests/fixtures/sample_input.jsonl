@@ -1,1 +1,0 @@
-﻿{"input_paths":["audio/tests/fixtures/sample_audio.wav"],"config_overrides":{"qwen_asr_enabled":false,"faster_whisper_enabled":false,"pyannote_enabled":false,"opa_enabled":false,"qwen_guard_enabled":false}}

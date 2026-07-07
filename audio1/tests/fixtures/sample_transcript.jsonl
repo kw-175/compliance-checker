@@ -1,2 +1,0 @@
-﻿{"segment_id":"seg-001","start_time":0.0,"end_time":1.4,"text":"Please email john@example.com about the confidential wire transfer.","confidence":0.93,"engine_name":"fixture-asr","language":"en"}
-{"segment_id":"seg-002","start_time":1.4,"end_time":2.6,"text":"The account number is 123-45-6789 and this attack plan stays secret.","confidence":0.89,"engine_name":"fixture-asr","language":"en"}

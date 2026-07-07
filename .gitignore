@@ -48,8 +48,10 @@ video_test_runs/
 *.pid
 *.sock
 
-# Model directories and ML artifacts
-/models/
+# Model directories and ML artifacts. Keep directory placeholders, not payloads.
+models/**
+!models/**/
+!models/**/.gitkeep
 *.bin
 *.ckpt
 *.gguf
