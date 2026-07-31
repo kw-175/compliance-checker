@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from audio.models.schemas import Decision as AudioDecision
+from common.enums import TrustLevel
 from picture.infra.storage import LocalFileStorageBackend
 from video.application.action_planner import build_action_plan
 from video.application.clip_moderator import ClipModerationConfig, moderate_clip_windows
@@ -227,7 +228,8 @@ class VideoCompliancePipeline:
             )
             clip_risks = []
             clip_moderation_audits = []
-            if bool(options.get("enable_clip_moderation", self.settings.clip_moderation_enabled)):
+            clip_moderation_enabled = bool(options.get("enable_clip_moderation", self.settings.clip_moderation_enabled))
+            if clip_moderation_enabled:
                 clip_start = time.monotonic()
                 clip_risks, clip_moderation_audits = moderate_clip_windows(
                     sequence.frames,
@@ -283,6 +285,7 @@ class VideoCompliancePipeline:
                 scene_windows,
                 clip_windows,
                 clip_moderation_audits,
+                clip_moderation_enabled=clip_moderation_enabled,
             )
             write_jsonl(review_queue, self.output_dir / "review_queue.jsonl")
             write_json(quality_report, self.output_dir / "quality_report.json")
@@ -313,6 +316,11 @@ class VideoCompliancePipeline:
                 preview_suffix = Path(preview_path).suffix or ".gif"
                 job.asset.metadata["preview_uri"] = self.storage.save(preview_path, f"{job.job_id}/preview{preview_suffix}")
             job.asset.frame_manifest_uri = self.storage.save(str((self.output_dir / "frame_manifest.jsonl").resolve()), f"{job.job_id}/frame_manifest.jsonl")
+            trust_level, degrade_summary = _video_trust_level(
+                clip_moderation_enabled,
+                clip_windows,
+                clip_moderation_audits,
+            )
             compliance_output = export_governance_artifacts(
                 self.output_dir,
                 self.run_id,
@@ -323,6 +331,8 @@ class VideoCompliancePipeline:
                 operator_selection=resolved_selection.selection,
                 preserved_targets=job.preserved_training_targets,
                 display_risks=job.display_risks,
+                trust_level=trust_level,
+                degrade_summary=degrade_summary,
                 extra_artifacts={
                     "frame_manifest": str((self.output_dir / "frame_manifest.jsonl").resolve()),
                     "scene_manifest": str((self.output_dir / "scene_manifest.jsonl").resolve()),
@@ -439,6 +449,28 @@ def _choose_audio_for_render(original_audio_path: str, redacted_audio_path: str 
     if audio_decision in {None, AudioDecision.ALLOW} and Path(original_audio_path).exists():
         return original_audio_path
     return None
+
+
+def _video_trust_level(
+    clip_moderation_enabled: bool,
+    clip_windows: list[dict[str, object]],
+    clip_audits: list[dict[str, object]],
+) -> tuple[TrustLevel, str]:
+    if not clip_windows:
+        return TrustLevel.FULL, ""
+    if not clip_moderation_enabled:
+        return TrustLevel.PARTIAL, "短片段行为审核已关闭，结果仅覆盖视频帧、音频和静态视觉风险。"
+
+    completed = sum(1 for item in clip_audits if item.get("status") == "completed")
+    failed = sum(1 for item in clip_audits if item.get("status") == "failed")
+    if completed == len(clip_windows) and failed == 0:
+        return TrustLevel.FULL, ""
+    if completed == 0:
+        return TrustLevel.PARTIAL, "短片段行为审核未成功覆盖任何时间窗，时序动作风险可能漏检。"
+    return TrustLevel.DEGRADED, (
+        f"短片段行为审核仅完成 {completed}/{len(clip_windows)} 个时间窗，"
+        f"失败 {failed} 个时间窗。"
+    )
 
 
 def _attach_representative_frames(risks, frames) -> None:  # type: ignore[no-untyped-def]

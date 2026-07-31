@@ -13,6 +13,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from audio.models.schemas import Decision as AudioDecision
+from common.enums import TrustLevel
 from picture.domain.enums import DecisionType, FindingType, JobStatus, RouteType, SafetyCategory
 from picture.domain.models import BBox, PictureFinding, PictureJob, PictureModerationResult, PicturePolicyResult, RegionMask, SourceSpec
 from video.application import services
@@ -27,7 +28,7 @@ from video.config.settings import Settings
 from video.domain.enums import VideoDecisionType, VideoGovernanceDecision, VideoJobStatus
 from video.domain.models import TaskContext, TimeSpan, VideoActionPlan, VideoGovernancePolicyResult, VideoRedactionOperation, VideoRiskAnnotation
 from video.domain.taxonomy import map_moderation_category
-from video.pipeline import VideoCompliancePipeline
+from video.pipeline import VideoCompliancePipeline, _video_trust_level
 from ops import sam3_api
 
 
@@ -79,6 +80,40 @@ def _make_settings(base: Path) -> Settings:
 def test_video_temporal_and_tracking_capabilities_are_enabled_by_default():
     assert Settings.model_fields["clip_moderation_enabled"].default is True
     assert Settings.model_fields["sam3_video_tracking_enabled"].default is True
+
+
+def test_video_trust_is_partial_when_clip_moderation_is_disabled() -> None:
+    trust, summary = _video_trust_level(False, [{"window_id": "clip_1"}], [])
+
+    assert trust == TrustLevel.PARTIAL
+    assert "已关闭" in summary
+
+
+def test_video_trust_reflects_clip_moderation_coverage() -> None:
+    windows = [{"window_id": "clip_1"}, {"window_id": "clip_2"}]
+
+    partial, _ = _video_trust_level(True, windows, [{"window_id": "clip_1", "status": "failed"}])
+    degraded, summary = _video_trust_level(
+        True,
+        windows,
+        [
+            {"window_id": "clip_1", "status": "completed"},
+            {"window_id": "clip_2", "status": "failed"},
+        ],
+    )
+    full, _ = _video_trust_level(
+        True,
+        windows,
+        [
+            {"window_id": "clip_1", "status": "completed"},
+            {"window_id": "clip_2", "status": "completed"},
+        ],
+    )
+
+    assert partial == TrustLevel.PARTIAL
+    assert degraded == TrustLevel.DEGRADED
+    assert "1/2" in summary
+    assert full == TrustLevel.FULL
 
 
 def _mock_picture_options(route_hint: str) -> dict[str, object]:

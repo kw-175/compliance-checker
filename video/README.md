@@ -276,7 +276,7 @@ video/
 - `max_frames`: 最多分析多少帧
 - `scene_change_threshold`: 基于采样帧差异进行轻量镜头切分的阈值
 - `clip_window_ms`: 短片段多模态审核的时间窗长度
-- `clip_moderation_enabled`: 是否调用 8200 的 `/video/action-recognition` 做片段级行为风险审核
+- `clip_moderation_enabled`: 是否调用本地视频动作适配器的 `/video/action-recognition` 做片段级行为风险审核
 - `track_gap_tolerance_ms / track_iou_threshold`: 风险轨合并和框序列插值的时间/空间阈值
 - `render_preview`: 是否生成叠框预览
 - `enable_audio_sidecar`: 是否尝试处理 sidecar 音轨
@@ -338,7 +338,7 @@ curl -X POST http://localhost:19003/api/v1/check \
 - `frame_manifest.jsonl`: 帧级结果摘要
 - `scene_manifest.jsonl`: 轻量镜头切分结果
 - `clip_windows.jsonl`: 短片段审核窗口
-- `clip_moderation_audit.jsonl`: 8200 片段级行为审核请求结果
+- `clip_moderation_audit.jsonl`: 本地 Qwen3.5 片段级行为审核请求结果
 - `segment_manifest.jsonl`: 视频片段划分
 - `video_findings.jsonl`: 时序聚合后的发现
 - `risk_tracks.json`: 带 bbox 序列、插值框、mask 关键帧的视频风险轨

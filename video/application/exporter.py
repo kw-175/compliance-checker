@@ -32,6 +32,8 @@ def export_governance_artifacts(
     preserved_targets: list[PreservedTrainingTarget] | None = None,
     display_risks: list[VideoRiskAnnotation] | None = None,
     extra_artifacts: dict[str, str] | None = None,
+    trust_level: TrustLevel = TrustLevel.FULL,
+    degrade_summary: str = "",
 ) -> ComplianceOutput:
     """Write governance artifacts and return the cross-modal compliance output."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -66,9 +68,10 @@ def export_governance_artifacts(
         pipeline_run_id=run_id,
         modality=Modality.VIDEO,
         decision=_to_unified_decision(policy.decision),
-        trust_level=TrustLevel.FULL,
+        trust_level=trust_level,
         annotation_package_uri=str(artifact_paths["annotation_overlay"]),
         audit_package_uri=str(artifact_paths["audit_package"]),
+        degrade_summary=degrade_summary,
         review_suggestions=_review_suggestions(risks, policy),
         explanation_summary=_explanation_summary(risks, policy),
         legacy_decision={

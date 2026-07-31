@@ -72,6 +72,7 @@ def build_quality_report(
     scene_windows: list[dict[str, Any]],
     clip_windows: list[dict[str, Any]],
     clip_audits: list[dict[str, Any]],
+    clip_moderation_enabled: bool = True,
 ) -> dict[str, Any]:
     """Summarize runtime coverage, cache behavior, and residual risk."""
     cached_frames = [frame for frame in sequence.frames if frame.metadata.get("cached_from_frame_id")]
@@ -98,6 +99,7 @@ def build_quality_report(
         "scene_count": len(scene_windows),
         "clip_window_count": len(clip_windows),
         "clip_moderation": {
+            "enabled": clip_moderation_enabled,
             "completed_windows": sum(1 for item in clip_audits if item.get("status") == "completed"),
             "failed_windows": len(failed_clip_windows),
             "failed_window_ids": [str(item.get("window_id") or "") for item in failed_clip_windows],
@@ -112,7 +114,7 @@ def build_quality_report(
         "manual_redaction_review_count": sum(1 for risk in risks if _manual_redaction_review_needed(risk)),
         "redaction_scope_count": dict(Counter(str(risk.metadata.get("tracking", {}).get("redaction_scope") or "unknown") for risk in risks)),
         "analyzed_frame_uri_count": len(analyzed_frame_ids),
-        "quality_flags": _quality_flags(sequence, risks, failed_clip_windows),
+        "quality_flags": _quality_flags(sequence, risks, failed_clip_windows, clip_moderation_enabled, clip_windows),
     }
 
 
@@ -145,12 +147,20 @@ def _review_reasons(risk: VideoRiskAnnotation, tracking: dict[str, Any]) -> list
     return reasons or ["需要抽样复核"]
 
 
-def _quality_flags(sequence: SequenceBundle, risks: list[VideoRiskAnnotation], failed_clip_windows: list[dict[str, Any]]) -> list[str]:
+def _quality_flags(
+    sequence: SequenceBundle,
+    risks: list[VideoRiskAnnotation],
+    failed_clip_windows: list[dict[str, Any]],
+    clip_moderation_enabled: bool,
+    clip_windows: list[dict[str, Any]],
+) -> list[str]:
     flags: list[str] = []
     if sequence.total_duration_ms and len(sequence.frames) < max(2, sequence.total_duration_ms // 5000):
         flags.append("采样帧较少，短暂风险漏检概率较高")
     if failed_clip_windows:
         flags.append("部分短片段多模态审核失败")
+    if clip_windows and not clip_moderation_enabled:
+        flags.append("短片段行为审核已关闭，时序动作风险可能漏检")
     if any(risk.source_modality == "video_clip" and not risk.regions for risk in risks):
         flags.append("存在片段级风险但缺少空间框，需要结合关键帧复核")
     if any(_manual_redaction_review_needed(risk) for risk in risks):

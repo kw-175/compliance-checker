@@ -308,7 +308,7 @@ bash scripts/start_audio_local_stack.sh start
 # 图片栈：图片 API；可选启动文本栈
 bash scripts/start_picture_local_stack.sh start
 
-# 视频完整栈：文本、PaddleOCR-VL、SAM3、音频、图片和视频服务
+# 视频完整栈：文本、PaddleOCR-VL、SAM3、音频、图片、本地 Qwen3.5 视频动作适配器和视频服务
 bash scripts/start_video_compliance_stack.sh start
 
 # 单独启动 PaddleOCR-VL serving

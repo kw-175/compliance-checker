@@ -12,6 +12,7 @@ START_PADDLEOCR_VL="${START_PADDLEOCR_VL:-true}"
 START_SAM3_API="${START_SAM3_API:-true}"
 START_AUDIO_STACK="${START_AUDIO_STACK:-true}"
 START_PICTURE_API="${START_PICTURE_API:-true}"
+START_QWEN35_VIDEO_ADAPTER="${START_QWEN35_VIDEO_ADAPTER:-true}"
 STOP_DEPENDENCIES="${STOP_DEPENDENCIES:-false}"
 
 TEXT_STACK_SCRIPT="${TEXT_STACK_SCRIPT:-$PROJECT/scripts/start_text_8200_stack.sh}"
@@ -23,9 +24,9 @@ PICTURE_SCRIPT="${PICTURE_SCRIPT:-$PROJECT/scripts/start_picture_local_stack.sh}
 TEXT_SESSION="${TEXT_SESSION:-text-8200}"
 AUDIO_SESSION="${AUDIO_SESSION:-audio-local}"
 
-QWEN35_BASE_URL="${QWEN35_BASE_URL:-http://127.0.0.1:8200/openai/v1}"
-QWEN35_HEALTH_URL="${QWEN35_HEALTH_URL:-http://127.0.0.1:8200/health}"
-QWEN35_MODEL="${QWEN35_MODEL:-Qwen/Qwen3.5-9B}"
+QWEN35_BASE_URL="${QWEN35_BASE_URL:-http://127.0.0.1:8301/v1}"
+QWEN35_HEALTH_URL="${QWEN35_HEALTH_URL:-http://127.0.0.1:8301/health}"
+QWEN35_MODEL="${QWEN35_MODEL:-Qwen3.5-9B}"
 
 TEXT_API_BASE_URL="${TEXT_API_BASE_URL:-http://127.0.0.1:19002}"
 PADDLEOCR_VL_API_URL="${PADDLEOCR_VL_API_URL:-http://127.0.0.1:8217}"
@@ -62,10 +63,17 @@ VIDEO_SCENE_MIN_DURATION_MS="${VIDEO_SCENE_MIN_DURATION_MS:-1000}"
 VIDEO_CLIP_WINDOW_MS="${VIDEO_CLIP_WINDOW_MS:-5000}"
 VIDEO_CLIP_WINDOW_OVERLAP_MS="${VIDEO_CLIP_WINDOW_OVERLAP_MS:-1000}"
 VIDEO_CLIP_MODERATION_ENABLED="${VIDEO_CLIP_MODERATION_ENABLED:-true}"
-VIDEO_CLIP_MODERATION_BASE_URL="${VIDEO_CLIP_MODERATION_BASE_URL:-http://127.0.0.1:8200}"
+QWEN35_VIDEO_ADAPTER_HOST="${QWEN35_VIDEO_ADAPTER_HOST:-127.0.0.1}"
+QWEN35_VIDEO_ADAPTER_PORT="${QWEN35_VIDEO_ADAPTER_PORT:-8219}"
+QWEN35_VIDEO_ADAPTER_PROBE_HOST="${QWEN35_VIDEO_ADAPTER_PROBE_HOST:-127.0.0.1}"
+QWEN35_VIDEO_ADAPTER_URL="${QWEN35_VIDEO_ADAPTER_URL:-http://${QWEN35_VIDEO_ADAPTER_PROBE_HOST}:${QWEN35_VIDEO_ADAPTER_PORT}}"
+QWEN35_VIDEO_ADAPTER_TIMEOUT_SECONDS="${QWEN35_VIDEO_ADAPTER_TIMEOUT_SECONDS:-180}"
+QWEN35_VIDEO_ADAPTER_MAX_TOKENS="${QWEN35_VIDEO_ADAPTER_MAX_TOKENS:-1536}"
+QWEN35_VIDEO_ADAPTER_MAX_FRAMES="${QWEN35_VIDEO_ADAPTER_MAX_FRAMES:-4}"
+VIDEO_CLIP_MODERATION_BASE_URL="${VIDEO_CLIP_MODERATION_BASE_URL:-$QWEN35_VIDEO_ADAPTER_URL}"
 VIDEO_CLIP_MODERATION_ENDPOINT="${VIDEO_CLIP_MODERATION_ENDPOINT:-/video/action-recognition}"
 VIDEO_CLIP_MODERATION_TIMEOUT_SECONDS="${VIDEO_CLIP_MODERATION_TIMEOUT_SECONDS:-120}"
-VIDEO_CLIP_MODERATION_MAX_FRAMES="${VIDEO_CLIP_MODERATION_MAX_FRAMES:-8}"
+VIDEO_CLIP_MODERATION_MAX_FRAMES="${VIDEO_CLIP_MODERATION_MAX_FRAMES:-4}"
 VIDEO_CLIP_MODERATION_CONFIDENCE_THRESHOLD="${VIDEO_CLIP_MODERATION_CONFIDENCE_THRESHOLD:-0.55}"
 VIDEO_TRACK_GAP_TOLERANCE_MS="${VIDEO_TRACK_GAP_TOLERANCE_MS:-1000}"
 VIDEO_TRACK_IOU_THRESHOLD="${VIDEO_TRACK_IOU_THRESHOLD:-0.35}"
@@ -81,8 +89,8 @@ usage() {
 Usage: $0 [start|restart|stop|status|check|attach]
 
 Starts the full video compliance runtime:
-  external Qwen3.5 on 8200 -> text API -> PaddleOCR-VL -> SAM3 -> audio ASR stack
-  -> picture compliance API -> video compliance API
+  OpenAI-compatible Qwen3.5 -> text API -> PaddleOCR-VL -> SAM3 -> audio ASR
+  -> picture compliance API -> local video-action adapter -> video compliance API
 
 The current video engine requires picture API; it does not fall back to in-process
 picture pipeline.
@@ -96,6 +104,7 @@ Important overrides:
   START_SAM3_API=$START_SAM3_API
   START_AUDIO_STACK=$START_AUDIO_STACK
   START_PICTURE_API=$START_PICTURE_API
+  START_QWEN35_VIDEO_ADAPTER=$START_QWEN35_VIDEO_ADAPTER
   STOP_DEPENDENCIES=$STOP_DEPENDENCIES
 
 Service URLs:
@@ -107,6 +116,7 @@ Service URLs:
   VIDEO_SAM3_VIDEO_TRACKING_ENABLED=$VIDEO_SAM3_VIDEO_TRACKING_ENABLED
   VIDEO_SAM3_VIDEO_TRACKER_BASE_URL=$VIDEO_SAM3_VIDEO_TRACKER_BASE_URL
   VIDEO_SAM3_VIDEO_TRACKER_ENDPOINT=$VIDEO_SAM3_VIDEO_TRACKER_ENDPOINT
+  QWEN35_VIDEO_ADAPTER_URL=$QWEN35_VIDEO_ADAPTER_URL
   PICTURE_API_BASE_URL=$PICTURE_API_BASE_URL
   ASR_ENDPOINT=$ASR_ENDPOINT
   ASR_HEALTH_URL=$ASR_HEALTH_URL
@@ -255,6 +265,22 @@ start_audio_stack() {
 
 write_runners() {
   mkdir -p "$RUN_DIR"
+  cat > "$RUN_DIR/qwen35_video_adapter.sh" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+cd $(q "$PROJECT")
+source $(q "$VIDEO_ENV_ACTIVATE")
+export CUDA_VISIBLE_DEVICES=""
+export QWEN35_VIDEO_VLLM_URL=$(q "${QWEN35_BASE_URL%/}/chat/completions")
+export QWEN35_VIDEO_MODEL=$(q "$QWEN35_MODEL")
+export QWEN35_VIDEO_TIMEOUT_SECONDS=$(q "$QWEN35_VIDEO_ADAPTER_TIMEOUT_SECONDS")
+export QWEN35_VIDEO_MAX_TOKENS=$(q "$QWEN35_VIDEO_ADAPTER_MAX_TOKENS")
+export QWEN35_VIDEO_MAX_FRAMES=$(q "$QWEN35_VIDEO_ADAPTER_MAX_FRAMES")
+echo "[qwen35-video-adapter] Starting on ${QWEN35_VIDEO_ADAPTER_HOST}:${QWEN35_VIDEO_ADAPTER_PORT} -> \${QWEN35_VIDEO_VLLM_URL}"
+exec python -m uvicorn ops.qwen35_video_adapter:app --host $(q "$QWEN35_VIDEO_ADAPTER_HOST") --port $(q "$QWEN35_VIDEO_ADAPTER_PORT")
+EOF
+  chmod +x "$RUN_DIR/qwen35_video_adapter.sh"
+
   cat > "$RUN_DIR/picture_api.sh" <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -341,7 +367,13 @@ start_picture_and_video() {
 
   if probe "${PICTURE_API_BASE_URL%/}/api/v1/health"; then
     log "Picture API already ready: ${PICTURE_API_BASE_URL}"
-    tmux new-session -d -s "$SESSION" -n video-server "$RUN_DIR/video_server.sh"
+    if [[ "$START_QWEN35_VIDEO_ADAPTER" == "true" && "$VIDEO_CLIP_MODERATION_ENABLED" == "true" ]]; then
+      tmux new-session -d -s "$SESSION" -n qwen-video-adapter "$RUN_DIR/qwen35_video_adapter.sh"
+      wait_for_http "qwen35-video-adapter" "${QWEN35_VIDEO_ADAPTER_URL%/}/health" 120
+      tmux new-window -t "$SESSION" -n video-server "$RUN_DIR/video_server.sh"
+    else
+      tmux new-session -d -s "$SESSION" -n video-server "$RUN_DIR/video_server.sh"
+    fi
     wait_for_http "video-api" "http://${VIDEO_PROBE_HOST}:${VIDEO_PORT}/api/v1/health" 180
     return
   fi
@@ -353,6 +385,10 @@ start_picture_and_video() {
     fail "Picture API is not ready and START_PICTURE_API=false"
   fi
 
+  if [[ "$START_QWEN35_VIDEO_ADAPTER" == "true" && "$VIDEO_CLIP_MODERATION_ENABLED" == "true" ]]; then
+    tmux new-window -t "$SESSION" -n qwen-video-adapter "$RUN_DIR/qwen35_video_adapter.sh"
+    wait_for_http "qwen35-video-adapter" "${QWEN35_VIDEO_ADAPTER_URL%/}/health" 120
+  fi
   tmux new-window -t "$SESSION" -n video-server "$RUN_DIR/video_server.sh"
   tmux select-window -t "$SESSION:video-server"
   wait_for_http "video-api" "http://${VIDEO_PROBE_HOST}:${VIDEO_PORT}/api/v1/health" 180
@@ -379,6 +415,7 @@ Services:
   sam3-api       ${SAM3_API_URL}
   asr-adapter    ${ASR_ENDPOINT}
   picture-api    ${PICTURE_API_BASE_URL}
+  qwen-video     ${QWEN35_VIDEO_ADAPTER_URL}
   video-api      http://${VIDEO_PROBE_HOST}:${VIDEO_PORT}
 
 Useful commands:
@@ -421,6 +458,7 @@ status_stack() {
     "sam3-api ${SAM3_API_URL%/}/health" \
     "asr-adapter ${ASR_HEALTH_URL}" \
     "picture-api ${PICTURE_API_BASE_URL%/}/api/v1/health" \
+    "qwen-video ${QWEN35_VIDEO_ADAPTER_URL%/}/health" \
     "video-api http://${VIDEO_PROBE_HOST}:${VIDEO_PORT}/api/v1/health"; do
     local name="${item%% *}"
     local url="${item#* }"

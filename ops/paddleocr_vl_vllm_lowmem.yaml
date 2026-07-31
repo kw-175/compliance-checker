@@ -1,0 +1,6 @@
+gpu-memory-utilization: 0.06
+max-model-len: 8192
+max-num-batched-tokens: 8192
+max-num-seqs: 4
+api-server-count: 1
+enforce-eager: true

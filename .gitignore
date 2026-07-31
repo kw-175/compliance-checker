@@ -44,6 +44,8 @@ temp_text/
 outputs/
 compliance_output_picture/
 video_test_runs/
+/artifacts/
+/报告/
 *.log
 *.pid
 *.sock

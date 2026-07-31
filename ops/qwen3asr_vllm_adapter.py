@@ -10,11 +10,14 @@ from pydantic import BaseModel, Field
 app = FastAPI(title="Qwen3-ASR vLLM Adapter")
 
 MODEL_PATH = os.getenv("QWEN3ASR_MODEL", "/data/kw/compliance-checker/models/Qwen/Qwen3-ASR-0.6B")
-GPU_MEMORY_UTILIZATION = float(os.getenv("QWEN3ASR_GPU_MEMORY_UTILIZATION", "0.12"))
+GPU_MEMORY_UTILIZATION = float(os.getenv("QWEN3ASR_GPU_MEMORY_UTILIZATION", "0.08"))
 MAX_INFERENCE_BATCH_SIZE = int(os.getenv("QWEN3ASR_MAX_INFERENCE_BATCH_SIZE", "1"))
 MAX_NEW_TOKENS = int(os.getenv("QWEN3ASR_MAX_NEW_TOKENS", "2048"))
 MAX_MODEL_LEN = int(os.getenv("QWEN3ASR_MAX_MODEL_LEN", "4096"))
+MAX_NUM_BATCHED_TOKENS = int(os.getenv("QWEN3ASR_MAX_NUM_BATCHED_TOKENS", "2048"))
 TENSOR_PARALLEL_SIZE = int(os.getenv("QWEN3ASR_TENSOR_PARALLEL_SIZE", "1"))
+ENFORCE_EAGER = os.getenv("QWEN3ASR_ENFORCE_EAGER", "true").lower() in {"1", "true", "yes"}
+ENABLE_PREFIX_CACHING = os.getenv("QWEN3ASR_ENABLE_PREFIX_CACHING", "false").lower() in {"1", "true", "yes"}
 DEVICE = os.getenv("QWEN3ASR_DEVICE", "cuda")
 FORCED_ALIGNER = os.getenv("QWEN3ASR_FORCED_ALIGNER", "").strip() or None
 RETURN_TIME_STAMPS = os.getenv("QWEN3ASR_RETURN_TIME_STAMPS", "false").lower() in {"1", "true", "yes"}
@@ -52,7 +55,10 @@ def load_model():
             max_inference_batch_size=MAX_INFERENCE_BATCH_SIZE,
             max_new_tokens=MAX_NEW_TOKENS,
             max_model_len=MAX_MODEL_LEN,
+            max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS,
             tensor_parallel_size=TENSOR_PARALLEL_SIZE,
+            enforce_eager=ENFORCE_EAGER,
+            enable_prefix_caching=ENABLE_PREFIX_CACHING,
         )
         return _model
 
@@ -70,7 +76,10 @@ async def health() -> dict[str, Any]:
         "max_inference_batch_size": MAX_INFERENCE_BATCH_SIZE,
         "max_new_tokens": MAX_NEW_TOKENS,
         "max_model_len": MAX_MODEL_LEN,
+        "max_num_batched_tokens": MAX_NUM_BATCHED_TOKENS,
         "tensor_parallel_size": TENSOR_PARALLEL_SIZE,
+        "enforce_eager": ENFORCE_EAGER,
+        "enable_prefix_caching": ENABLE_PREFIX_CACHING,
         "forced_aligner": FORCED_ALIGNER,
         "return_time_stamps": RETURN_TIME_STAMPS,
     }
@@ -92,7 +101,10 @@ async def ready() -> dict[str, Any]:
         "max_inference_batch_size": MAX_INFERENCE_BATCH_SIZE,
         "max_new_tokens": MAX_NEW_TOKENS,
         "max_model_len": MAX_MODEL_LEN,
+        "max_num_batched_tokens": MAX_NUM_BATCHED_TOKENS,
         "tensor_parallel_size": TENSOR_PARALLEL_SIZE,
+        "enforce_eager": ENFORCE_EAGER,
+        "enable_prefix_caching": ENABLE_PREFIX_CACHING,
     }
 
 
