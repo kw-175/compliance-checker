@@ -7,6 +7,7 @@ from text.api_clients import OpenAICompatibleAPIError, OpenAICompatibleComplianc
 from text.config.settings import Settings, get_settings
 from text.models.schemas import DocumentContextRecord, IngestUnit
 from text.prompt_loader import load_prompt
+from text.llm_concurrency import map_concurrently
 
 logger = logging.getLogger(__name__)
 
@@ -162,16 +163,14 @@ def run(
 
     client = OpenAICompatibleComplianceClient(settings)
     system_prompt = load_prompt(str(settings.local_document_context_prompt_path))
-    results: list[DocumentContextRecord] = []
-
-    for unit in ingest_units:
+    def _process_unit(unit: IngestUnit):
         try:
             payload = client.complete_json(
                 task_name="document_context",
                 system_prompt=system_prompt,
                 payload=_payload(unit, settings, provider.max_chars),
             )
-            results.append(
+            return [
                 _normalize_payload(
                     unit,
                     payload,
@@ -179,11 +178,11 @@ def run(
                     provider_version=provider.model,
                     is_degraded=False,
                 )
-            )
+            ]
         except Exception as exc:
             logger.warning("Local document-context inference failed for %s: %s", unit.doc_id, exc)
             heuristic = _heuristic_context(unit)
-            results.append(
+            return [
                 heuristic.model_copy(
                     update={
                         "is_degraded": True,
@@ -194,7 +193,8 @@ def run(
                         },
                     }
                 )
-            )
+            ]
 
+    results = map_concurrently(_process_unit, ingest_units, step_name="doc-context")
     logger.info("Document-context build completed: %d documents", len(results))
     return results

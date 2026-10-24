@@ -24,3 +24,9 @@ Rules:
 - Pay special attention to re-identification and student/minor record aggregation.
 - If multiple identifiers combine into a realistic profile, reflect that in `combination_risk`.
 - The explanation must mention whether local redaction/generalization is enough or whether the document should leave the training path entirely.
+
+Output length limits (hard requirements):
+
+- `summary` at most 15 words.
+- `explanation` at most 40 words, still stating whether local redaction/generalization is enough or the document must leave the training path.
+- Do not output fields beyond the schema.

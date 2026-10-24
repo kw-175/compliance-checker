@@ -89,6 +89,8 @@ class Settings(BaseSettings):
     local_compliance_timeout_seconds: int = 120
     local_compliance_temperature: float = 0.0
     local_compliance_max_chars: int = 12000
+    llm_max_concurrency: int = 8  # 独立 LLM 调用的并发上限；1=串行（历史行为）
+    parallel_modality_chains: bool = False  # full 档位下内容链与隐私链是否并行（当前 8200 后端下并行更慢，默认关闭）
     local_compliance_max_tokens: int = 4096
     local_compliance_source_tool_prefix: str = "local_model"
     local_document_context_prompt_path: Path = Field(

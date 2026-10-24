@@ -13,6 +13,7 @@ from text.models.schemas import (
 )
 from text.prompt_loader import load_prompt
 from text.steps.adjudication_payloads import compact_content_finding_payload, snippet_window
+from text.llm_concurrency import map_concurrently
 
 logger = logging.getLogger(__name__)
 
@@ -163,37 +164,43 @@ def run(
 
     client = OpenAICompatibleComplianceClient(settings)
     system_prompt = load_prompt(str(settings.local_content_fragment_prompt_path))
-    all_records: list[ContentFragmentAdjudicationRecord] = []
+
+    def _process_finding(task):
+        unit, finding = task
+        result = safety_by_doc.get(unit.doc_id)
+        document_context = context_by_doc.get(unit.doc_id)
+        try:
+            payload = client.complete_json(
+                task_name="content_fragment_adjudication",
+                system_prompt=system_prompt,
+                payload=_payload(unit, finding, document_context, provider.max_chars),
+            )
+            records = _normalize_records(
+                unit,
+                result.model_copy(update={"findings": [finding]}),
+                payload,
+                provider_name="local_content_fragment_adjudicator",
+                provider_version=provider.model,
+            )
+            if not records:
+                records = _heuristic_adjudication(unit, result.model_copy(update={"findings": [finding]}), document_context)
+                for record in records:
+                    record.is_degraded = True
+                    record.metadata["degrade_reason"] = "empty_local_adjudication"
+            return records
+        except Exception as exc:
+            logger.warning("Local content fragment adjudication failed for %s/%s: %s", unit.doc_id, finding.finding_id, exc)
+            records = _heuristic_adjudication(unit, result.model_copy(update={"findings": [finding]}), document_context)
+            for record in records:
+                record.is_degraded = True
+                record.metadata["degrade_reason"] = str(exc)
+            return records
+
+    tasks = []
     for unit in ingest_units:
         result = safety_by_doc.get(unit.doc_id)
         if result is None or not result.findings:
             continue
-        document_context = context_by_doc.get(unit.doc_id)
         for finding in result.findings:
-            try:
-                payload = client.complete_json(
-                    task_name="content_fragment_adjudication",
-                    system_prompt=system_prompt,
-                    payload=_payload(unit, finding, document_context, provider.max_chars),
-                )
-                records = _normalize_records(
-                    unit,
-                    result.model_copy(update={"findings": [finding]}),
-                    payload,
-                    provider_name="local_content_fragment_adjudicator",
-                    provider_version=provider.model,
-                )
-                if not records:
-                    records = _heuristic_adjudication(unit, result.model_copy(update={"findings": [finding]}), document_context)
-                    for record in records:
-                        record.is_degraded = True
-                        record.metadata["degrade_reason"] = "empty_local_adjudication"
-                all_records.extend(records)
-            except Exception as exc:
-                logger.warning("Local content fragment adjudication failed for %s/%s: %s", unit.doc_id, finding.finding_id, exc)
-                records = _heuristic_adjudication(unit, result.model_copy(update={"findings": [finding]}), document_context)
-                for record in records:
-                    record.is_degraded = True
-                    record.metadata["degrade_reason"] = str(exc)
-                all_records.extend(records)
-    return all_records
+            tasks.append((unit, finding))
+    return map_concurrently(_process_finding, tasks, step_name="content-frag")

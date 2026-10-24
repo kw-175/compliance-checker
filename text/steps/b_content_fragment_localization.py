@@ -17,6 +17,7 @@ from text.models.schemas import (
     TextSpan,
 )
 from text.prompt_loader import load_prompt
+from text.llm_concurrency import map_concurrently
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +172,30 @@ def run(
     all_fragments: list[ContentLocalizedFragmentRecord] = []
     safety_results: list[ContentSafetyResult] = []
 
+    def _localize(task):
+        unit, window = task
+        document_context = context_by_doc.get(unit.doc_id)
+        try:
+            payload = client.complete_json(
+                task_name="content_fragment_localization",
+                system_prompt=system_prompt,
+                payload=_payload(window, document_context),
+            )
+            return (unit.doc_id, window.window_id), payload
+        except Exception as exc:
+            return (unit.doc_id, window.window_id), exc
+
+    if provider.mode == "local_model" and client is not None:
+        localize_tasks = [
+            (unit, window)
+            for unit in ingest_units
+            for window in windows_by_doc.get(unit.doc_id, [])
+            if not window.rule_hits
+        ]
+        localized_payloads = dict(map_concurrently(_localize, localize_tasks, step_name="content-localize"))
+    else:
+        localized_payloads = {}
+
     for unit in ingest_units:
         windows = windows_by_doc.get(unit.doc_id, [])
         document_context = context_by_doc.get(unit.doc_id)
@@ -182,11 +207,9 @@ def run(
                 continue
             if provider.mode == "local_model" and client is not None:
                 try:
-                    payload = client.complete_json(
-                        task_name="content_fragment_localization",
-                        system_prompt=system_prompt,
-                        payload=_payload(window, document_context),
-                    )
+                    payload = localized_payloads[(unit.doc_id, window.window_id)]
+                    if isinstance(payload, Exception):
+                        raise payload
                     localized = _normalize_model_fragments(unit, window, payload)
                     if localized:
                         doc_fragments.extend(localized)

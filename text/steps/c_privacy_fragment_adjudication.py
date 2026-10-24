@@ -13,6 +13,7 @@ from text.models.schemas import (
 )
 from text.prompt_loader import load_prompt
 from text.steps.adjudication_payloads import compact_privacy_finding_payload, snippet_window
+from text.llm_concurrency import map_concurrently
 
 logger = logging.getLogger(__name__)
 
@@ -294,32 +295,37 @@ def run(
 
     client = OpenAICompatibleComplianceClient(settings)
     system_prompt = load_prompt(str(settings.local_privacy_fragment_prompt_path))
-    all_records: list[PrivacyFragmentAdjudicationRecord] = []
+
+    def _process_finding(task):
+        unit, finding = task
+        result = privacy_by_doc.get(unit.doc_id)
+        document_context = context_by_doc.get(unit.doc_id)
+        try:
+            payload = client.complete_json(
+                task_name="privacy_fragment_adjudication",
+                system_prompt=system_prompt,
+                payload=_payload(unit, finding, document_context, provider.max_chars),
+            )
+            records = _normalize_records(
+                unit,
+                result.model_copy(update={"findings": [finding]}),
+                payload,
+                provider_name="local_privacy_fragment_adjudicator",
+                provider_version=provider.model,
+                document_context=document_context,
+            )
+            if not records:
+                records = [_degraded_review_record(unit, finding, document_context, "empty_local_adjudication")]
+            return records
+        except Exception as exc:
+            logger.warning("Local privacy fragment adjudication failed for %s/%s: %s", unit.doc_id, finding.finding_id, exc)
+            return [_degraded_review_record(unit, finding, document_context, str(exc))]
+
+    tasks = []
     for unit in ingest_units:
         result = privacy_by_doc.get(unit.doc_id)
         if result is None or not result.findings:
             continue
-        document_context = context_by_doc.get(unit.doc_id)
-        by_finding = {finding.finding_id: finding for finding in result.findings}
         for finding in result.findings:
-            try:
-                payload = client.complete_json(
-                    task_name="privacy_fragment_adjudication",
-                    system_prompt=system_prompt,
-                    payload=_payload(unit, finding, document_context, provider.max_chars),
-                )
-                records = _normalize_records(
-                    unit,
-                    result.model_copy(update={"findings": [finding]}),
-                    payload,
-                    provider_name="local_privacy_fragment_adjudicator",
-                    provider_version=provider.model,
-                    document_context=document_context,
-                )
-                if not records:
-                    records = [_degraded_review_record(unit, finding, document_context, "empty_local_adjudication")]
-                all_records.extend(records)
-            except Exception as exc:
-                logger.warning("Local privacy fragment adjudication failed for %s/%s: %s", unit.doc_id, finding.finding_id, exc)
-                all_records.append(_degraded_review_record(unit, by_finding[finding.finding_id], document_context, str(exc)))
-    return all_records
+            tasks.append((unit, finding))
+    return map_concurrently(_process_finding, tasks, step_name="privacy-frag")

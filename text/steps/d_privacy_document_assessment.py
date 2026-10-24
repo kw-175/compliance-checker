@@ -14,6 +14,7 @@ from text.models.schemas import (
 )
 from text.prompt_loader import load_prompt
 from text.steps.adjudication_payloads import compact_fragment_adjudication_payload
+from text.llm_concurrency import map_concurrently
 
 logger = logging.getLogger(__name__)
 
@@ -255,39 +256,38 @@ def run(
 
     client = OpenAICompatibleComplianceClient(settings)
     system_prompt = load_prompt(str(settings.local_privacy_document_prompt_path))
-    assessments: list[PrivacyDocumentAssessmentRecord] = []
-    for unit in ingest_units:
+    def _process_unit(unit: IngestUnit):
         result = privacy_by_doc.get(unit.doc_id)
         fragments = fragments_by_doc.get(unit.doc_id, [])
         document_context = context_by_doc.get(unit.doc_id)
         if not result or not result.findings:
-            assessments.append(
+            return [
                 _clear_assessment(
                     unit,
                     document_context,
                     provider_name="privacy_document_scope_guard",
                     provider_version="builtin-2026.05",
                 )
-            )
-            continue
+            ]
         try:
             payload = client.complete_json(
                 task_name="privacy_document_assessment",
                 system_prompt=system_prompt,
                 payload=_payload(unit, result, fragments, document_context, provider.max_chars),
             )
-            assessments.append(
+            return [
                 _normalize_record(
                     unit,
                     payload,
                     provider_name="local_privacy_document_assessor",
                     provider_version=provider.model,
                 )
-            )
+            ]
         except Exception as exc:
             logger.warning("Local privacy document assessment failed for %s: %s", unit.doc_id, exc)
             record = _heuristic_assessment(unit, result, fragments, document_context)
             record.is_degraded = True
             record.metadata["degrade_reason"] = str(exc)
-            assessments.append(record)
-    return assessments
+            return [record]
+
+    return map_concurrently(_process_unit, ingest_units, step_name="privacy-doc")

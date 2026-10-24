@@ -32,3 +32,10 @@ Rules:
 - Use `manual_review` when context is insufficient or ambiguous.
 - Use `exclude_from_training` only when the privacy risk cannot be safely handled by local editing.
 - The explanation must mention both the surrounding context and the governance conclusion.
+
+Output length limits (hard requirements):
+
+- `summary` at most 15 words.
+- Each `training_impact` and `annotation_impact` at most 12 words.
+- Each `explanation` at most 40 words, while still mentioning both the surrounding context and the governance conclusion.
+- Do not output fields beyond the schema and do not repeat the input fragment.

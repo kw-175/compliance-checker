@@ -28,3 +28,9 @@ Rules:
 - If the text appears to be an example, template, textbook explanation, or test sample, reflect that directly.
 - The `explanation` must be user-readable natural language, not labels only.
 - If the context is uncertain, use `other` or `unknown`, lower confidence, and explain the uncertainty.
+
+Output length limits (hard requirements):
+
+- `summary` at most 20 words.
+- `explanation` at most 40 words, still natural language and user-readable.
+- Do not output fields beyond the schema.

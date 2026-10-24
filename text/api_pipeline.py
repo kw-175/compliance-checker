@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from pathlib import Path
 
@@ -191,75 +192,116 @@ class APICompliancePipeline:
                 content_document_assessments=content_document_assessments,
             )
 
-        content_candidate_windows = []
-        localized_fragments = []
-        if provider_meta["mode"] == "local_model":
-            content_candidate_windows = b_content_candidate_windows.run(ingest_units, document_contexts, self.settings)
-            write_jsonl(content_candidate_windows, artifact_paths["content_candidate_windows"])
-            localized_fragments, safety_results = b_content_fragment_localization.run(
+        def _run_content_chain():
+            content_candidate_windows = []
+            localized_fragments = []
+            if provider_meta["mode"] == "local_model":
+                content_candidate_windows = b_content_candidate_windows.run(ingest_units, document_contexts, self.settings)
+                write_jsonl(content_candidate_windows, artifact_paths["content_candidate_windows"])
+                localized_fragments, safety_results = b_content_fragment_localization.run(
+                    ingest_units,
+                    content_candidate_windows,
+                    document_contexts,
+                    self.settings,
+                )
+                write_jsonl(localized_fragments, artifact_paths["content_fragment_localization"])
+            else:
+                safety_results = api_safety_moderation.run(ingest_units, self.settings, document_contexts=document_contexts)
+            write_jsonl(safety_results, artifact_paths["content_safety"])
+            content_fragment_adjudications = c_content_fragment_adjudication.run(
                 ingest_units,
-                content_candidate_windows,
+                safety_results,
                 document_contexts,
                 self.settings,
             )
-            write_jsonl(localized_fragments, artifact_paths["content_fragment_localization"])
+            write_jsonl(content_fragment_adjudications, artifact_paths["content_fragment_adjudications"])
+            content_document_assessments = d_content_document_assessment.run(
+                ingest_units,
+                safety_results,
+                content_fragment_adjudications,
+                document_contexts,
+                self.settings,
+            )
+            write_jsonl(content_document_assessments, artifact_paths["content_document_assessments"])
+            self._write_content_safety_governance_artifacts(
+                safety_results,
+                artifact_paths,
+                document_contexts=document_contexts,
+                content_candidate_windows=content_candidate_windows,
+                content_localized_fragments=localized_fragments,
+                content_fragment_adjudications=content_fragment_adjudications,
+                content_document_assessments=content_document_assessments,
+            )
+            return (
+                content_candidate_windows,
+                localized_fragments,
+                safety_results,
+                content_fragment_adjudications,
+                content_document_assessments,
+            )
+
+        def _run_privacy_chain():
+            privacy_results = api_privacy_detection.run(ingest_units, self.settings, document_contexts=document_contexts)
+            write_jsonl(privacy_results, artifact_paths["privacy"])
+            privacy_fragment_adjudications = c_privacy_fragment_adjudication.run(
+                ingest_units,
+                privacy_results,
+                document_contexts,
+                self.settings,
+            )
+            write_jsonl(privacy_fragment_adjudications, artifact_paths["privacy_fragment_adjudications"])
+            privacy_document_assessments = d_privacy_document_assessment.run(
+                ingest_units,
+                privacy_results,
+                privacy_fragment_adjudications,
+                document_contexts,
+                self.settings,
+            )
+            write_jsonl(privacy_document_assessments, artifact_paths["privacy_document_assessments"])
+            redaction_plans = span_conflict_resolution.run(ingest_units, privacy_results)
+            write_jsonl(redaction_plans, artifact_paths["redaction_plan"])
+            self._write_privacy_governance_artifacts(
+                ingest_units,
+                privacy_results,
+                redaction_plans,
+                artifact_paths,
+                document_contexts=document_contexts,
+                privacy_fragment_adjudications=privacy_fragment_adjudications,
+                privacy_document_assessments=privacy_document_assessments,
+            )
+            return privacy_results, privacy_fragment_adjudications, privacy_document_assessments, redaction_plans
+
+        if self.settings.parallel_modality_chains:
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="chain") as _chain_pool:
+                _content_future = _chain_pool.submit(_run_content_chain)
+                _privacy_future = _chain_pool.submit(_run_privacy_chain)
+            (
+                content_candidate_windows,
+                localized_fragments,
+                safety_results,
+                content_fragment_adjudications,
+                content_document_assessments,
+            ) = _content_future.result()
+            (
+                privacy_results,
+                privacy_fragment_adjudications,
+                privacy_document_assessments,
+                redaction_plans,
+            ) = _privacy_future.result()
         else:
-            safety_results = api_safety_moderation.run(ingest_units, self.settings, document_contexts=document_contexts)
-        write_jsonl(safety_results, artifact_paths["content_safety"])
-        content_fragment_adjudications = c_content_fragment_adjudication.run(
-            ingest_units,
-            safety_results,
-            document_contexts,
-            self.settings,
-        )
-        write_jsonl(content_fragment_adjudications, artifact_paths["content_fragment_adjudications"])
-        content_document_assessments = d_content_document_assessment.run(
-            ingest_units,
-            safety_results,
-            content_fragment_adjudications,
-            document_contexts,
-            self.settings,
-        )
-        write_jsonl(content_document_assessments, artifact_paths["content_document_assessments"])
-        self._write_content_safety_governance_artifacts(
-            safety_results,
-            artifact_paths,
-            document_contexts=document_contexts,
-            content_candidate_windows=content_candidate_windows,
-            content_localized_fragments=localized_fragments,
-            content_fragment_adjudications=content_fragment_adjudications,
-            content_document_assessments=content_document_assessments,
-        )
-
-        privacy_results = api_privacy_detection.run(ingest_units, self.settings, document_contexts=document_contexts)
-        write_jsonl(privacy_results, artifact_paths["privacy"])
-        privacy_fragment_adjudications = c_privacy_fragment_adjudication.run(
-            ingest_units,
-            privacy_results,
-            document_contexts,
-            self.settings,
-        )
-        write_jsonl(privacy_fragment_adjudications, artifact_paths["privacy_fragment_adjudications"])
-        privacy_document_assessments = d_privacy_document_assessment.run(
-            ingest_units,
-            privacy_results,
-            privacy_fragment_adjudications,
-            document_contexts,
-            self.settings,
-        )
-        write_jsonl(privacy_document_assessments, artifact_paths["privacy_document_assessments"])
-
-        redaction_plans = span_conflict_resolution.run(ingest_units, privacy_results)
-        write_jsonl(redaction_plans, artifact_paths["redaction_plan"])
-        self._write_privacy_governance_artifacts(
-            ingest_units,
-            privacy_results,
-            redaction_plans,
-            artifact_paths,
-            document_contexts=document_contexts,
-            privacy_fragment_adjudications=privacy_fragment_adjudications,
-            privacy_document_assessments=privacy_document_assessments,
-        )
+            (
+                content_candidate_windows,
+                localized_fragments,
+                safety_results,
+                content_fragment_adjudications,
+                content_document_assessments,
+            ) = _run_content_chain()
+            (
+                privacy_results,
+                privacy_fragment_adjudications,
+                privacy_document_assessments,
+                redaction_plans,
+            ) = _run_privacy_chain()
 
         adjudications = api_hard_case_adjudication.run(
             ingest_units,

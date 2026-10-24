@@ -30,3 +30,10 @@ Rules:
 - Educational, warning, historical, quoted, or analytical context can reduce a finding to review, but should not erase evidence.
 - Do not directly `keep` a fragment that still teaches harmful execution details.
 - The explanation must state the context, the semantic role, and why the fragment is or is not suitable for training.
+
+Output length limits (hard requirements):
+
+- `summary` at most 15 words.
+- Each `training_impact` and `annotation_impact` at most 12 words.
+- Each `explanation` at most 40 words, while still stating the context, the semantic role, and training suitability.
+- Do not output fields beyond the schema and do not repeat the input fragment.

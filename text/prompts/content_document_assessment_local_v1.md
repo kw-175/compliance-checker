@@ -24,3 +24,9 @@ Rules:
 - Distinguish between dangerous propagation and protective discussion.
 - If multiple fragments combine into a practical harmful tutorial or sustained harmful stance, reflect that strongly.
 - Educational, warning, historical, or quoted context can justify review, but not silent allowance of strong harmful enablement.
+
+Output length limits (hard requirements):
+
+- `summary` at most 15 words.
+- `explanation` at most 40 words.
+- Do not output fields beyond the schema.

@@ -24,3 +24,9 @@ Rules:
 - Prefer the smallest risky phrase that still captures the harmful meaning.
 - Do not return the whole window unless the whole window is the smallest risky unit.
 - If the candidate window only discusses risk in a protective way and contains no minimal risky phrase worth separate adjudication, return an empty `fragments` list.
+
+Output length limits (hard requirements):
+
+- `summary` at most 15 words.
+- Each `explanation` at most 25 words.
+- Do not output fields beyond the schema.
