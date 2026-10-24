@@ -143,7 +143,7 @@ class Settings(BaseSettings):
     text_api_submit_timeout_seconds: int = Field(default=120)
     text_api_poll_timeout_seconds: int = Field(default=30)
     text_api_task_timeout_seconds: int = Field(default=1800)
-    text_api_poll_interval_millis: int = Field(default=3000)
+    text_api_poll_interval_millis: int = Field(default=500)
 
 
 def get_settings() -> Settings:
