@@ -20,6 +20,10 @@ class Sam3VideoTrackerConfig:
     timeout_seconds: int = 300
     fail_on_error: bool = False
     return_masks: bool = True
+    context_ms: int = 3000
+    max_frames_per_request: int = 64
+    offload_video_to_cpu: bool = True
+    offload_state_to_cpu: bool = False
 
 
 def enrich_with_sam3_video_tracking(
@@ -50,31 +54,65 @@ def enrich_with_sam3_video_tracking(
         report["reason"] = "no_seeded_visual_risks"
         return report
 
-    payload = _build_payload(frames, candidates, config)
+    tracking_requests = _build_tracking_requests(candidates, frames, config)
+    report["request_count"] = len(tracking_requests)
+    report["full_timeline_frame_count"] = len(frames)
+    report["tracked_frame_count"] = sum(len(request_frames) for request_frames, _ in tracking_requests)
+    report["max_request_frame_count"] = max((len(request_frames) for request_frames, _ in tracking_requests), default=0)
+    updated_risk_ids: set[str] = set()
+    point_count = 0
+    response_track_count = 0
+    failed_requests = 0
+    errors: list[str] = []
     try:
         import httpx
-
-        response = httpx.post(report["endpoint"], json=payload, timeout=config.timeout_seconds)
-        response.raise_for_status()
-        data = response.json()
     except Exception as exc:
         report.update({"reason": "tracker_request_failed", "error": str(exc)})
         _mark_tracker_fallback(candidates, report)
         if config.fail_on_error:
             raise
-        logger.warning("SAM3 video tracker unavailable, falling back to sampled-frame tracking: %s", exc)
         return report
 
-    updated_count, point_count = _apply_tracker_response(candidates, frames, data)
+    for request_frames, request_risks in tracking_requests:
+        payload = _build_payload(request_frames, request_risks, config)
+        try:
+            response = httpx.post(report["endpoint"], json=payload, timeout=config.timeout_seconds)
+            response.raise_for_status()
+            data = response.json()
+        except Exception as exc:
+            failed_requests += 1
+            errors.append(str(exc))
+            fallback_report = {**report, "reason": "tracker_request_failed"}
+            _mark_tracker_fallback(request_risks, fallback_report)
+            if config.fail_on_error:
+                raise
+            logger.warning("SAM3 video tracker unavailable for a risk window, using sampled-frame tracking: %s", exc)
+            continue
+
+        updated_count, added_points = _apply_tracker_response(request_risks, request_frames, data)
+        point_count += added_points
+        response_track_count += len(_response_tracks(data))
+        updated_risk_ids.update(
+            risk.risk_id
+            for risk in request_risks
+            if isinstance(risk.metadata.get("sam3_video_tracking"), dict)
+            and risk.metadata["sam3_video_tracking"].get("applied")
+        )
+        if updated_count == 0:
+            _mark_tracker_fallback(request_risks, {**report, "reason": "empty_tracker_result"})
+
     report.update({
-        "applied": updated_count > 0,
-        "updated_risk_count": updated_count,
+        "applied": bool(updated_risk_ids),
+        "updated_risk_count": len(updated_risk_ids),
         "point_count": point_count,
-        "response_track_count": len(_response_tracks(data)),
+        "response_track_count": response_track_count,
+        "failed_request_count": failed_requests,
     })
-    if updated_count == 0:
-        report["reason"] = "empty_tracker_result"
-        _mark_tracker_fallback(candidates, report)
+    if errors:
+        report["error"] = errors[0]
+        report["errors"] = errors
+    if not updated_risk_ids:
+        report["reason"] = "tracker_request_failed" if failed_requests == len(tracking_requests) else "empty_tracker_result"
     return report
 
 
@@ -88,12 +126,14 @@ def _tracking_candidates(risks: list[VideoRiskAnnotation]) -> list[VideoRiskAnno
         if not _is_trackable_instance_seed(risk):
             continue
         if _has_unreliable_seed_localization(risk):
-            risk.metadata["sam3_video_tracking"] = {
-                "applied": False,
-                "skipped": True,
-                "reason": "unreliable_seed_localization",
-            }
-            continue
+            if _track_target_type(risk) != "conflict_region":
+                risk.metadata["sam3_video_tracking"] = {
+                    "applied": False,
+                    "skipped": True,
+                    "reason": "unreliable_seed_localization",
+                }
+                continue
+            risk.metadata.setdefault("seed_quality", "coarse")
         if not any(isinstance(region, dict) and isinstance(region.get("bbox"), dict) for region in risk.regions):
             continue
         candidates.append(risk)
@@ -121,7 +161,93 @@ def _build_payload(
         "return_masks": config.return_masks,
         "return_polygons": True,
         "coordinate_format": "xywh",
+        "max_frame_num_to_track": len(frames),
+        "offload_video_to_cpu": config.offload_video_to_cpu,
+        "offload_state_to_cpu": config.offload_state_to_cpu,
     }
+
+
+def _build_tracking_requests(
+    risks: list[VideoRiskAnnotation],
+    frames: list[FrameReference],
+    config: Sam3VideoTrackerConfig,
+) -> list[tuple[list[FrameReference], list[VideoRiskAnnotation]]]:
+    """Group overlapping risk spans and keep SAM3 requests bounded to local windows."""
+    if not risks or not frames:
+        return []
+    frame_by_id = {frame.frame_id: frame for frame in frames}
+    timeline_start = frames[0].pts_ms
+    timeline_end = _frame_end_ms(frames[-1])
+    windows: list[tuple[int, int, VideoRiskAnnotation]] = []
+    for risk in risks:
+        seed_frames = [
+            frame_by_id.get(str(region.get("frame_id") or ""))
+            for region in risk.regions
+            if isinstance(region, dict)
+        ]
+        seed_frames = [frame for frame in seed_frames if frame is not None]
+        start_ms = min([risk.span.start_ms, *[frame.pts_ms for frame in seed_frames]])
+        end_ms = max([risk.span.end_ms, *[_frame_end_ms(frame) for frame in seed_frames]])
+        start_ms = max(timeline_start, start_ms - max(0, config.context_ms))
+        end_ms = min(timeline_end, end_ms + max(0, config.context_ms))
+        windows.append((start_ms, max(start_ms + 1, end_ms), risk))
+    windows.sort(key=lambda item: (item[0], item[1]))
+
+    grouped: list[tuple[int, int, list[VideoRiskAnnotation]]] = []
+    for start_ms, end_ms, risk in windows:
+        if grouped and start_ms <= grouped[-1][1]:
+            previous_start, previous_end, previous_risks = grouped[-1]
+            grouped[-1] = (previous_start, max(previous_end, end_ms), [*previous_risks, risk])
+        else:
+            grouped.append((start_ms, end_ms, [risk]))
+
+    requests: list[tuple[list[FrameReference], list[VideoRiskAnnotation]]] = []
+    for start_ms, end_ms, grouped_risks in grouped:
+        request_frames = [
+            frame
+            for frame in frames
+            if frame.pts_ms < end_ms and _frame_end_ms(frame) > start_ms
+        ]
+        if not request_frames:
+            midpoint = (start_ms + end_ms) // 2
+            request_frames = [min(frames, key=lambda frame: abs(frame.pts_ms - midpoint))]
+        request_frames = _limit_tracking_frames(request_frames, grouped_risks, config.max_frames_per_request)
+        requests.append((request_frames, grouped_risks))
+    return requests
+
+
+def _limit_tracking_frames(
+    frames: list[FrameReference],
+    risks: list[VideoRiskAnnotation],
+    max_frames: int,
+) -> list[FrameReference]:
+    if max_frames <= 0 or len(frames) <= max_frames:
+        return list(frames)
+    mandatory_ids = {
+        str(region.get("frame_id") or "")
+        for risk in risks
+        for region in risk.regions
+        if isinstance(region, dict) and region.get("frame_id")
+    }
+    mandatory = [frame for frame in frames if frame.frame_id in mandatory_ids]
+    if len(mandatory) >= max_frames:
+        return mandatory
+    optional = [frame for frame in frames if frame.frame_id not in mandatory_ids]
+    budget = max_frames - len(mandatory)
+    if budget == 1:
+        sampled_optional = [optional[len(optional) // 2]]
+    else:
+        indexes = {
+            round(index * (len(optional) - 1) / max(1, budget - 1))
+            for index in range(budget)
+        }
+        sampled_optional = [optional[index] for index in sorted(indexes)]
+    selected_ids = {frame.frame_id for frame in [*mandatory, *sampled_optional]}
+    return [frame for frame in frames if frame.frame_id in selected_ids]
+
+
+def _frame_end_ms(frame: FrameReference) -> int:
+    return frame.pts_ms + max(1, _safe_int(frame.metadata.get("duration_ms"), 0))
 
 
 def _seed_track_payload(risk: VideoRiskAnnotation) -> dict[str, Any]:
@@ -338,7 +464,7 @@ def _is_trackable_instance_seed(risk: VideoRiskAnnotation) -> bool:
     if role == "object_instance":
         return True
     if role in {"event", "localized_candidate", "unlocalized_instance"}:
-        return False
+        return _track_target_type(risk) == "conflict_region"
     if risk.category.startswith("privacy."):
         return True
     if risk.source_modality in {"visual", "ocr_text", "video_object"}:

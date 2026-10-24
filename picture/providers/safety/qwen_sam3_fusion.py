@@ -18,11 +18,14 @@ SAFETY_SAM3_PROMPTS: dict[str, tuple[str, ...]] = {
         "sexual body part",
     ),
     SafetyCategory.GRAPHIC_VIOLENCE.value: (
+        "person",
+        "man",
+        "woman",
+        "fighting group",
         "blood",
         "wound",
         "injury",
         "violent weapon",
-        "graphic violence",
     ),
     SafetyCategory.HATE_SYMBOL.value: (
         "hate symbol",
@@ -301,7 +304,7 @@ def _run_violation_localization(
             continue
         threshold = _safety_thresholds([category], default_threshold).get(category, default_threshold)
         candidates: list[dict[str, Any]] = []
-        for attempt in _sam3_localization_attempts(sam3, image_path, violation, prompt, threshold, category):
+        for attempt in _sam3_localization_attempts(sam3, image_path, violation, prompt, threshold, category, width, height):
             attempt_candidates, candidate_rejected = _select_violation_candidates(
                 attempt["findings"],
                 violation,
@@ -369,6 +372,8 @@ def _sam3_localization_attempts(
     prompt: str,
     threshold: float,
     category: str,
+    image_width: float = 0.0,
+    image_height: float = 0.0,
 ) -> Any:
     prompts = _expand_category_prompts(category, violation.get("sam_prompt_texts") or [prompt])
     centers = _center_points(violation.get("center_points") or [])
@@ -392,7 +397,7 @@ def _sam3_localization_attempts(
         if point_payload:
             yield {
                 "name": "point_text_prompt",
-                "require_center_proximity": False if category == SafetyCategory.EXPLICIT.value else True,
+                "require_center_proximity": False if category in {SafetyCategory.EXPLICIT.value, SafetyCategory.GRAPHIC_VIOLENCE.value} else True,
                 "findings": sam3.detect_with_points(image_path, point_payload),
             }
     yield {
@@ -403,6 +408,17 @@ def _sam3_localization_attempts(
             [{"category": category, "text": text, "threshold": threshold} for text in prompts[:6]],
         ),
     }
+    crop_info = _crop_for_sam3_localization(image_path, violation, image_width, image_height)
+    if crop_info is not None:
+        crop_findings = sam3.detect_exact_prompts(
+            crop_info["crop_path"],
+            [{"category": category, "text": text, "threshold": threshold} for text in prompts[:6]],
+        )
+        yield {
+            "name": "crop_text_prompt",
+            "require_center_proximity": False,
+            "findings": _translate_crop_findings(crop_findings, crop_info["origin_x"], crop_info["origin_y"]),
+        }
     fallback_prompts = _fallback_prompts_for_violation(category, prompt, violation)
     if fallback_prompts:
         yield {
@@ -537,10 +553,15 @@ def _select_violation_candidates(
     for finding in findings:
         if finding.region is None:
             continue
+        fb = finding.region.bbox
+        if float(fb.w) < 3.0 or float(fb.h) < 3.0:
+            logger.info("Drop degenerate SAM3 candidate box: category=%s bbox=%.1f,%.1f,%.1f,%.1f", violation.get("category"), float(fb.x), float(fb.y), float(fb.w), float(fb.h))
+            continue
         evidence = _finding_to_evidence(finding, [])
         evidence.update(
             {
                 "violation_id": violation.get("violation_id"),
+                "description": str(violation.get("risk_reason_zh") or evidence.get("description") or ""),
                 "entity_label_en": violation.get("entity_label_en"),
                 "entity_label_zh": violation.get("entity_label_zh"),
                 "risk_subtype": violation.get("risk_subtype"),
@@ -640,6 +661,23 @@ def _canonical_safety_prompt(category: str, prompt: str) -> str:
         "血液": "blood",
         "血迹": "blood",
         "伤口": "wound",
+        "fighting": "fighting group",
+        "fight": "fighting group",
+        "打架": "fighting group",
+        "打斗": "fighting group",
+        "斗殴": "fighting group",
+        "肢体冲突": "fighting group",
+        "暴力": "fighting group",
+        "暴力行为": "fighting group",
+        "打斗人群": "fighting group",
+        "斗殴区域": "fighting group",
+        "attack": "fighting group",
+        "violence": "fighting group",
+        "violent behaviour": "fighting group",
+        "violent behavior": "fighting group",
+        "graphic violence": "fighting group",
+        "physical conflict": "fighting group",
+        "conflict region": "fighting group",
         "nude male": "naked body",
         "nude female": "naked body",
         "nude person": "naked body",
@@ -1380,6 +1418,8 @@ def _coarse_evidence_from_violation(violation: dict[str, Any], width: int, heigh
     y = max(0.0, min(y, float(height)))
     w = max(1.0, min(w, float(width) - x))
     h = max(1.0, min(h, float(height) - y))
+    if w < 6.0 or h < 6.0:
+        return None
     return {
         "category": str(violation.get("category") or SafetyCategory.OTHER_NSFW.value),
         "label": str(violation.get("entity_label_en") or violation.get("entity_label_zh") or "safety risk"),
@@ -1512,6 +1552,71 @@ def _normalized_point_bbox_distance(x: float, y: float, bbox: list[float], width
     dx = abs(cx - x) / float(width)
     dy = abs(cy - y) / float(height)
     return (dx * dx + dy * dy) ** 0.5
+
+
+def _crop_for_sam3_localization(
+    image_path: str,
+    violation: dict[str, Any],
+    image_width: float,
+    image_height: float,
+) -> dict[str, Any] | None:
+    """按 VL 粗框裁剪局部图供 SAM3 分割，提升小目标与身体部件的有效分辨率。"""
+    if image_width <= 0 or image_height <= 0:
+        return None
+    bbox = violation.get("rough_bbox") or violation.get("bbox")
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        return None
+    x, y, w, h = [float(item) for item in bbox]
+    if w <= 0 or h <= 0 or x >= image_width or y >= image_height:
+        return None
+    pad = 0.6
+    min_side = min(image_width, image_height) * 0.25
+    x1 = max(0.0, x - w * pad)
+    y1 = max(0.0, y - h * pad)
+    x2 = min(image_width, x + w * (1.0 + pad))
+    y2 = min(image_height, y + h * (1.0 + pad))
+    if x2 - x1 < min_side:
+        cx = (x1 + x2) / 2.0
+        x1 = max(0.0, cx - min_side / 2.0)
+        x2 = min(image_width, x1 + min_side)
+        x1 = max(0.0, x2 - min_side)
+    if y2 - y1 < min_side:
+        cy = (y1 + y2) / 2.0
+        y1 = max(0.0, cy - min_side / 2.0)
+        y2 = min(image_height, y1 + min_side)
+        y1 = max(0.0, y2 - min_side)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    try:
+        from PIL import Image
+
+        crop_dir = Path(image_path).parent / "safety_crops"
+        crop_dir.mkdir(parents=True, exist_ok=True)
+        crop_path = crop_dir / f"sam3_crop_{abs(hash((image_path, x, y, w, h))):x}.jpg"
+        if not crop_path.exists():
+            with Image.open(Path(image_path)) as image:
+                image.convert("RGB").crop((int(x1), int(y1), int(x2), int(y2))).save(crop_path, format="JPEG", quality=92)
+        return {"crop_path": str(crop_path), "origin_x": x1, "origin_y": y1}
+    except Exception as exc:
+        logger.warning("SAM3 crop preparation failed: %s", exc)
+        return None
+
+
+def _translate_crop_findings(findings: list[Any], origin_x: float, origin_y: float) -> list[Any]:
+    """把裁剪图上的 SAM3 结果坐标平移回原图坐标系。"""
+    translated: list[Any] = []
+    for finding in findings:
+        if finding.region is None:
+            continue
+        region = finding.region.model_copy(deep=True)
+        bbox = region.bbox
+        region.bbox = bbox.model_copy(update={"x": float(bbox.x) + origin_x, "y": float(bbox.y) + origin_y})
+        if region.polygon is not None:
+            region.polygon = region.polygon.model_copy(deep=True)
+            region.polygon.points = [(float(px) + origin_x, float(py) + origin_y) for px, py in region.polygon.points]
+        region.mask_path = None
+        translated.append(finding.model_copy(update={"region": region}))
+    return translated
 
 
 def _crop_for_local_review(

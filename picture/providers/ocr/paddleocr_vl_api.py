@@ -5,6 +5,7 @@ import base64
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,7 @@ class PaddleOCRVLAPIProvider(OCRLayoutProvider):
         use_layout_detection: bool = True,
         use_chart_recognition: bool = True,
         use_seal_recognition: bool = True,
+        use_ocr_for_image_block: bool = True,
         prettify_markdown: bool = True,
         visualize: bool = False,
     ) -> None:
@@ -38,6 +40,7 @@ class PaddleOCRVLAPIProvider(OCRLayoutProvider):
         self._use_layout_detection = use_layout_detection
         self._use_chart_recognition = use_chart_recognition
         self._use_seal_recognition = use_seal_recognition
+        self._use_ocr_for_image_block = use_ocr_for_image_block
         self._prettify_markdown = prettify_markdown
         self._visualize = visualize
 
@@ -66,15 +69,29 @@ class PaddleOCRVLAPIProvider(OCRLayoutProvider):
             "useLayoutDetection": self._use_layout_detection,
             "useChartRecognition": self._use_chart_recognition,
             "useSealRecognition": self._use_seal_recognition,
+            "useOcrForImageBlock": self._use_ocr_for_image_block,
             "prettifyMarkdown": self._prettify_markdown,
             "visualize": self._visualize,
         }
 
-        try:
+        spotting_payload = {
+            **payload,
+            "useLayoutDetection": False,
+            "promptLabel": "spotting",
+            "layoutShapeMode": "quad",
+        }
+
+        def _post_layout(request_payload: dict[str, Any]) -> dict[str, Any]:
             with httpx.Client(timeout=self._timeout_seconds) as client:
-                response = client.post(f"{self._base_url}/layout-parsing", json=payload)
+                response = client.post(f"{self._base_url}/layout-parsing", json=request_payload)
             response.raise_for_status()
-            data = response.json()
+            return response.json()
+
+        try:
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="ocr") as pool:
+                layout_future = pool.submit(_post_layout, payload)
+                spotting_future = pool.submit(_post_layout, spotting_payload)
+            data = layout_future.result()
         except Exception as exc:
             raise ProviderNotAvailableError(f"PaddleOCR-VL API at {self._base_url}") from exc
 
@@ -87,16 +104,7 @@ class PaddleOCRVLAPIProvider(OCRLayoutProvider):
         spotting_instances: list[dict[str, Any]] = []
         spotting_error = ""
         try:
-            spotting_payload = {
-                **payload,
-                "useLayoutDetection": False,
-                "promptLabel": "spotting",
-                "layoutShapeMode": "quad",
-            }
-            with httpx.Client(timeout=self._timeout_seconds) as client:
-                spotting_response = client.post(f"{self._base_url}/layout-parsing", json=spotting_payload)
-            spotting_response.raise_for_status()
-            spotting_data = spotting_response.json()
+            spotting_data = spotting_future.result()
             spotting_error_code = spotting_data.get("errorCode")
             if spotting_error_code not in (None, 0):
                 spotting_error = str(spotting_data.get("errorMsg") or spotting_data.get("message") or spotting_error_code)

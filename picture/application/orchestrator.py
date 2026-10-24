@@ -1527,6 +1527,20 @@ class PictureComplianceOrchestrator:
 
 
 def _safety_finding_label(category: str, object_name: str, *, risk_subtype: str = "", decision_hint: str = "") -> str:
+    zh_object_names = {
+        "person": "人物",
+        "people": "人物",
+        "man": "男性人物",
+        "woman": "女性人物",
+        "fighting group": "打斗人群",
+        "pistol": "疑似手枪",
+        "gun": "疑似枪械",
+        "rifle": "疑似步枪",
+        "knife": "疑似刀具",
+        "blood": "血迹",
+        "wound": "伤口",
+    }
+    object_name = zh_object_names.get(str(object_name or "").strip().lower(), object_name)
     if decision_hint == "redact_only" and (risk_subtype == "exposed_upper_body" or object_name in {"裸露上身", "裸露躯干", "裸露胸腹", "裸露背部"}):
         return f"裸露身体区域：{object_name or '裸露上身'}"
     category_label = {

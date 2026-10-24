@@ -158,16 +158,43 @@ def run_text_content_detection(ocr_result: OCRLayoutResult) -> list[PictureFindi
 
 def _map_text_to_region(text_span: str, ocr_result: OCRLayoutResult) -> RegionMask | None:
     """Map a text span back to image coordinates using OCR text blocks."""
-    # 中文说明：这里采用的是最简单的包含匹配策略：
-    # 只要 text_span 出现在某个 OCR block 的文本里，就把该 block 的 bbox 作为实体区域。
-    # 这种实现成本低，但对跨 block 文本、重复文本、多次出现文本的情况会比较粗糙。
-    for block in ocr_result.text_blocks:
-        if text_span in block.text:
+    # 中文说明：优先用 spotting 实例级框（更细粒度）；
+    # 其次在包含该 span 的 block 里取面积最小的一块，避免框住整行/整块。
+    span = str(text_span or "").strip()
+    if not span:
+        return None
+    metadata = ocr_result.metadata or {}
+    instances = [
+        item for item in (metadata.get("text_instances") or [])
+        if isinstance(item, dict) and span in str(item.get("text") or "")
+    ]
+    if instances:
+        best = min(instances, key=lambda item: _bbox_area(item.get("bbox")))
+        bbox_raw = best.get("bbox")
+        if isinstance(bbox_raw, dict):
             return RegionMask(
-                bbox=block.bbox,
-                confidence=block.confidence,
+                bbox=BBox(
+                    x=float(bbox_raw.get("x") or 0.0),
+                    y=float(bbox_raw.get("y") or 0.0),
+                    w=float(bbox_raw.get("w") or 0.0),
+                    h=float(bbox_raw.get("h") or 0.0),
+                ),
+                confidence=float(best.get("confidence") or 0.7),
             )
-    return None
+    candidates = [block for block in ocr_result.text_blocks if span in block.text]
+    if not candidates:
+        return None
+    best_block = min(candidates, key=lambda block: block.bbox.w * block.bbox.h)
+    return RegionMask(bbox=best_block.bbox, confidence=best_block.confidence)
+
+
+def _bbox_area(bbox: Any) -> float:
+    if isinstance(bbox, dict):
+        try:
+            return float(bbox.get("w") or 0.0) * float(bbox.get("h") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
 
 
 def run_safety_moderation(
