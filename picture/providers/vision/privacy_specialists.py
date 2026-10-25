@@ -171,12 +171,16 @@ class SCRFDFaceDetector:
         confidence_threshold: float = 0.40,
         nms_threshold: float = 0.40,
         max_faces: int = 256,
+        small_image_second_pass_size: int = 1280,
+        small_image_max_side: int = 720,
     ) -> None:
         self._model_path = Path(model_path)
         self._input_size = int(input_size)
         self._confidence_threshold = float(confidence_threshold)
         self._nms_threshold = float(nms_threshold)
         self._max_faces = int(max_faces)
+        self._second_pass_size = int(small_image_second_pass_size)
+        self._small_image_max_side = int(small_image_max_side)
         self._session: Any | None = None
 
     @property
@@ -189,14 +193,30 @@ class SCRFDFaceDetector:
         if image is None:
             return []
         height, width = image.shape[:2]
-        blob, scale, pad_left, pad_top = _scrfd_blob(image, self._input_size)
+        findings = self._detect_at_input_size(image, width, height, self._input_size)
+        # 大图二遍推理：基础 640 letterbox 会把 max side > 640 的图缩小，远景脸进一步失采样。
+        # 二遍用更大输入恢复 30~80px 可识别脸的得分；_face_identifiability 的尺寸/得分闸在
+        # 原图坐标系生效，极小远景脸仍会被正确过滤。
+        if self._second_pass_size > self._input_size and max(width, height) > self._input_size:
+            second = self._detect_at_input_size(image, width, height, self._second_pass_size)
+            findings = _dedupe_by_iou([*findings, *second])
+        return findings
+
+    def _detect_at_input_size(
+        self,
+        image: Any,
+        width: int,
+        height: int,
+        input_size: int,
+    ) -> list[PictureFinding]:
+        blob, scale, pad_left, pad_top = _scrfd_blob(image, input_size)
         session = self._get_session()
         input_name = session.get_inputs()[0].name
         outputs = session.run(None, {input_name: blob})
         boxes, scores, keypoints = _decode_scrfd_outputs(
             outputs,
             score_threshold=self._confidence_threshold,
-            input_size=self._input_size,
+            input_size=input_size,
         )
         keep = _nms(boxes, scores, self._nms_threshold)[: self._max_faces]
         findings: list[PictureFinding] = []
@@ -232,7 +252,7 @@ class SCRFDFaceDetector:
                     },
                 )
             )
-        return _dedupe_by_iou(findings)
+        return findings
 
     def _get_session(self) -> Any:
         if self._session is not None:
@@ -254,6 +274,7 @@ class MediaPipeFullRangeFaceDetector:
     ) -> None:
         self._min_detection_confidence = float(min_detection_confidence)
         self._detector: Any | None = None
+        self._init_failed = False
 
     @property
     def name(self) -> str:
@@ -306,17 +327,25 @@ class MediaPipeFullRangeFaceDetector:
     def _get_detector(self) -> Any:
         if self._detector is not None:
             return self._detector
+        if self._init_failed:
+            raise RuntimeError("MediaPipe FaceDetection disabled: initialization failed earlier in this process.")
         import mediapipe as mp
 
-        if not hasattr(mp, "solutions") or not hasattr(mp.solutions, "face_detection"):
-            raise RuntimeError(
-                "MediaPipe Full-Range local FaceDetection API is unavailable. "
-                "Use mediapipe==0.10.14 for the local model_selection=1 runtime."
+        try:
+            if not hasattr(mp, "solutions") or not hasattr(mp.solutions, "face_detection"):
+                raise RuntimeError(
+                    "MediaPipe Full-Range local FaceDetection API is unavailable. "
+                    "Use mediapipe==0.10.14 for the local model_selection=1 runtime."
+                )
+            self._detector = mp.solutions.face_detection.FaceDetection(
+                model_selection=1,
+                min_detection_confidence=self._min_detection_confidence,
             )
-        self._detector = mp.solutions.face_detection.FaceDetection(
-            model_selection=1,
-            min_detection_confidence=self._min_detection_confidence,
-        )
+        except Exception as exc:
+            # 当前环境 protobuf>=6 与 mediapipe 0.10.x 的 gencode 不兼容（import 可过、process 报
+            # MessageFactory.GetPrototype / 空结果）。缓存失败状态，避免每次调用重复初始化的开销。
+            self._init_failed = True
+            raise RuntimeError(f"MediaPipe FaceDetection initialization failed; disabled for this process: {exc}") from exc
         return self._detector
 
 
