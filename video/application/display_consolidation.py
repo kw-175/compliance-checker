@@ -170,6 +170,7 @@ def _event_label_zh(risk: VideoRiskAnnotation) -> str:
         "content.sexual": "色情裸露",
         "content.hate": "仇恨极端内容",
         "content.self_harm": "自伤风险",
+        "content.dangerous_object": "武器/危险物品",
     }
     return labels.get(risk.category, "视频风险事件")
 

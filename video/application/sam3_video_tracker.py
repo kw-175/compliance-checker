@@ -497,12 +497,25 @@ def _track_target_type(risk: VideoRiskAnnotation) -> str:
     return ""
 
 
+_SAM3_TRACK_PROMPTS = {
+    "conflict_region": "fighting group",
+    "weapon": "weapon",
+    "blood_or_wound": "blood",
+    "face": "face",
+}
+
+
 def _tracking_prompt_text(risk: VideoRiskAnnotation, track_target: str) -> str:
-    label_zh = str(risk.metadata.get("instance_label_zh") or "").strip()
-    if track_target == "conflict_region":
-        return label_zh or "暴力斗殴区域"
+    # SAM3 是英文名词短语概念分割器：优先用与 track_target 对齐的可分割名词，
+    # 中文场景短语（如"暴力斗殴区域"）对概念编码器不可分。
+    canonical = _SAM3_TRACK_PROMPTS.get(track_target)
+    if canonical:
+        return canonical
+    label_en = str(risk.metadata.get("instance_label_en") or risk.metadata.get("entity_label_en") or "").strip()
+    if label_en:
+        return label_en
     if track_target:
-        return label_zh or track_target
+        return track_target
     return risk.text_span or risk.target_type or risk.category
 
 

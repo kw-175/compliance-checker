@@ -32,6 +32,7 @@ CONTENT_CATEGORIES = {
     "content.hate",
     "content.harassment",
     "content.illegal_instruction",
+    "content.dangerous_object",
     "content.other_nsfw",
 }
 
@@ -59,7 +60,7 @@ _SAFETY_CATEGORY_MAP = {
     SafetyCategory.GRAPHIC_VIOLENCE.value: "content.graphic_violence",
     SafetyCategory.HATE_SYMBOL.value: "content.hate",
     SafetyCategory.SELF_HARM.value: "content.self_harm",
-    SafetyCategory.DANGEROUS.value: "content.illegal_instruction",
+    SafetyCategory.DANGEROUS.value: "content.dangerous_object",
 }
 
 
