@@ -2,7 +2,12 @@
 .env
 .env.*
 !.env.example
-.codex
+# Track shared Codex project configuration while ignoring local Codex state.
+.codex/*
+!.codex/config.toml
+!.codex/agents/
+.codex/agents/*
+!.codex/agents/*.toml
 .agents/
 
 # Python bytecode, test caches, and tooling caches
@@ -102,3 +107,4 @@ tools/trufflehog
 # Never keep bytecode, even under fixture directories.
 **/__pycache__/
 *.py[cod]
+test_data/golden_picture/
