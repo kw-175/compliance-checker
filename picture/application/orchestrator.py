@@ -1099,8 +1099,9 @@ class PictureComplianceOrchestrator:
         if mode in {"privacy", "privacy_only"}:
             return ["face", "id_card", "badge", "license_plate", "account_region"]
         if mode in {"visual", "visual_only"}:
-            return ["face", "id_card", "badge", "qr_code", "barcode", "signature", "stamp"]
-        return ["face", "id_card", "badge", "qr_code", "barcode", "signature", "stamp"]
+            return ["face", "id_card", "badge", "qr_code", "barcode", "license_plate", "signature", "stamp"]
+        # 默认综合模式覆盖设计文档中普通教育数据集的全部需治理视觉对象（含车牌）。
+        return ["face", "id_card", "badge", "qr_code", "barcode", "license_plate", "signature", "stamp"]
 
     def _should_run_text_privacy(self, job: PictureJob) -> bool:
         explicit = job.options.get("enable_text_privacy_detection")
@@ -1255,8 +1256,15 @@ class PictureComplianceOrchestrator:
     def _moderation_metadata_categories(self, metadata: dict[str, Any]) -> list[SafetyCategory]:
         raw_values: list[Any] = []
         category_details = metadata.get("category_details") or {}
-        raw_values.extend(category_details.keys())
-        for detail in category_details.values():
+        # 模型判 safe 时也会为“审核过的类别”填全“无”占位模板；这些键不构成违规证据，
+        # 否则 _filter_selected_moderation 会把 safe 分数当作违规分、凭空造出 dangerous/GV。
+        substantive_details = {
+            key: detail
+            for key, detail in category_details.items()
+            if _category_detail_substantive(detail)
+        }
+        raw_values.extend(substantive_details.keys())
+        for detail in substantive_details.values():
             if isinstance(detail, dict):
                 raw_values.extend(detail.values())
         for key in ("violations", "localized_violations", "evidence_regions"):
@@ -1266,10 +1274,8 @@ class PictureComplianceOrchestrator:
                     raw_values.append(item.get("risk_subtype"))
                     raw_values.append(item.get("risk_subtype_zh"))
                     raw_values.append(item.get("object_name_zh"))
-        explanation = str(metadata.get("explanation") or "")
-        if any(token in explanation for token in ("肢体冲突", "斗殴", "打架", "暴力")):
-            raw_values.append(SafetyCategory.DANGEROUS.value)
-            raw_values.append(SafetyCategory.GRAPHIC_VIOLENCE.value)
+        # 说明文本（explanation）不做风险词子串扫描：safe 判词（如“未发现…暴力…”）
+        # 必然包含风险词的否定表述，会把正常图片误判为暴力/危险。
         return self._metadata_values_to_safety_categories(raw_values)
 
     def _metadata_values_to_safety_categories(self, values: list[Any]) -> list[SafetyCategory]:
@@ -1532,6 +1538,20 @@ class PictureComplianceOrchestrator:
             explanation_summary=audit_pkg.review_summary,
             legacy_decision=legacy,
         )
+
+
+_CATEGORY_DETAIL_PLACEHOLDERS = {"无", "无。", "none", "None", "N/A", "-"}
+
+
+def _category_detail_substantive(detail: Any) -> bool:
+    """category_details 条目是否包含实质风险内容（任一字段非占位）。"""
+    if not isinstance(detail, dict):
+        return False
+    for key in ("object_name_zh", "risk_reason_zh", "risk_subtype_zh"):
+        value = str(detail.get(key) or "").strip()
+        if value and value not in _CATEGORY_DETAIL_PLACEHOLDERS:
+            return True
+    return False
 
 
 def _safety_finding_label(category: str, object_name: str, *, risk_subtype: str = "", decision_hint: str = "") -> str:

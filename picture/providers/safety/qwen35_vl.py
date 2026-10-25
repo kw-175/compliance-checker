@@ -59,7 +59,7 @@ SYSTEM_PROMPT = """你是教育数据集图片合规审核员。
     "review_required": false,
     "explanation": "简短说明"
   }
-重点审核：色情裸露、未成年人性相关、血腥暴力、自伤自杀、武器危险行为、毒品违禁品、仇恨极端符号、违法犯罪场景、低俗不适内容。
+重点审核：色情裸露、未成年人性相关、血腥暴力、自伤自杀、武器危险行为、吸烟等学生不宜行为（含电子烟）、毒品违禁品、仇恨极端符号、违法犯罪场景、低俗不适内容。
 categories 只能使用以下枚举值：safe、explicit、graphic_violence、hate_symbol、self_harm、dangerous、other_nsfw。
 色情、裸露、性行为、性暗示、成人内容必须归为 explicit；低俗擦边或无法细分的不适内容归为 other_nsfw。
 只要图片存在明显色情裸露或成人性内容，is_safe 必须为 false，categories 必须包含 explicit，scores.explicit 应不低于 0.8。
@@ -228,6 +228,9 @@ class Qwen35VLSafetyModerator(SafetyModerator):
                 scores.setdefault(category.value, 1.0)
         evidence_regions = _evidence_regions(data.get("evidence_regions"), image_payload)
         violations = _violations(data.get("violations"), data.get("evidence_regions"), image_payload)
+        categories, is_safe, scores = _enforce_concrete_object_categories(
+            data, categories, is_safe, scores, evidence_regions, violations
+        )
         return PictureModerationResult(
             is_safe=is_safe,
             categories=categories,
@@ -760,6 +763,98 @@ def _bbox(value: Any) -> list[float] | None:
     if not all(_is_number(item) for item in value):
         return None
     return [float(item) for item in value]
+
+
+def _detail_has_substance(detail: Any) -> bool:
+    """category_details 条目是否包含实质风险内容（非空且非"无"类占位）。"""
+    if not isinstance(detail, dict):
+        return False
+    # 只认违规本体/理由/子类型；scene_description_zh 是中性场景描述，
+    # 模型判 safe 时也会填（如“监控视角下的酒吧场景”），不构成违规证据。
+    for key in ("object_name_zh", "risk_reason_zh", "risk_subtype_zh"):
+        value = str(detail.get(key) or "").strip()
+        if value and value not in {"无", "无。", "none", "None", "N/A", "-"}:
+            return True
+    return False
+
+
+def _violation_entry_is_concrete(entry: dict[str, Any]) -> bool:
+    """违规条目是否“具体”：有实体英文名或空间几何（center/rough_bbox）之一。
+
+    提示词要求每个 violation 必须给出实体英文名与坐标；缺两者的条目是模型的
+    占位输出，不能作为保留 concrete-object 类别的依据。
+    """
+    label = str(entry.get("entity_label_en") or "").strip().lower()
+    if label and label not in {"无", "none", "unknown", "n/a", "-"}:
+        return True
+    for key in ("center_point", "rough_bbox"):
+        value = entry.get(key)
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            return True
+    if isinstance(entry.get("center_points"), list) and entry["center_points"]:
+        return True
+    return False
+
+
+def _enforce_concrete_object_categories(
+    data: dict[str, Any],
+    categories: list[SafetyCategory],
+    is_safe: bool,
+    scores: dict[str, float],
+    evidence_regions: list[dict[str, Any]],
+    violations: list[dict[str, Any]],
+) -> tuple[list[SafetyCategory], bool, dict[str, float]]:
+    """一致性闸：dangerous/graphic_violence/hate_symbol/self_harm 按 schema 要求必须给出具体违规对象。
+
+    模型偶尔会把"审核过的类别"填进 categories（violations 为空、category_details 全是"无"、
+    explanation 明确说安全）——这类自相矛盾的结果按"未检出不违规"处理，避免正常图片被
+    误判为暴力/危险。violations 或明细有实质内容的类别不受影响。
+    """
+    concrete = {SafetyCategory.DANGEROUS, SafetyCategory.GRAPHIC_VIOLENCE, SafetyCategory.HATE_SYMBOL, SafetyCategory.SELF_HARM}
+    if is_safe or not any(category in concrete for category in categories):
+        return categories, is_safe, scores
+    violation_categories = {
+        str(item.get("category") or "").strip().lower()
+        for item in violations
+        if isinstance(item, dict) and _violation_entry_is_concrete(item)
+    }
+    evidence_categories = {str(item.get("category") or "").strip().lower() for item in evidence_regions if isinstance(item, dict)}
+    details = data.get("category_details")
+    details = details if isinstance(details, dict) else {}
+    dropped: list[str] = []
+    kept: list[SafetyCategory] = []
+    for category in categories:
+        if category not in concrete:
+            kept.append(category)
+            continue
+        key = category.value
+        has_violation = key in violation_categories or key in evidence_categories
+        has_detail = _detail_has_substance(details.get(key))
+        if has_violation or has_detail:
+            kept.append(category)
+        else:
+            dropped.append(key)
+    if not dropped:
+        for category in kept:
+            if category in concrete:
+                logger.info(
+                    "Concrete-object category kept: %s; violations=%d details_substantive=%s explanation=%s raw=%s",
+                    category.value,
+                    len(violations),
+                    _detail_has_substance(details.get(category.value)),
+                    _short_text(str(data.get("explanation") or "")),
+                    _short_text(json.dumps({"categories": data.get("categories"), "violations": data.get("violations")}, ensure_ascii=False), limit=600),
+                )
+        return categories, is_safe, scores
+    logger.info(
+        "Dropping categories without concrete violation objects (model listed audited categories as violated): %s; violations=%d",
+        dropped,
+        len(violations),
+    )
+    scores = {key: value for key, value in scores.items() if key not in set(dropped)}
+    if not kept or kept == [SafetyCategory.SAFE]:
+        return [SafetyCategory.SAFE], True, {"safe": max(0.99, scores.get("safe", 0.0))}
+    return kept, False, scores
 
 
 def _normalize_entity_label_en(value: Any) -> str:

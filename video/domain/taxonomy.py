@@ -87,6 +87,9 @@ def map_picture_finding_category(finding: PictureFinding) -> str:
 
 def map_moderation_category(moderation: PictureModerationResult, reason_code: str = "") -> str:
     """Map picture safety moderation categories into video taxonomy."""
+    if getattr(moderation, "is_safe", False):
+        # safe 判词（“未发现…暴力…”）含风险词属否定表述，不做子串扫描。
+        return ""
     metadata_text = json.dumps(moderation.metadata or {}, ensure_ascii=False).lower()
     if any(token in metadata_text for token in ("violence", "violent", "fight", "assault", "physical_conflict", "肢体冲突", "斗殴", "打架", "暴力")):
         return "content.graphic_violence"

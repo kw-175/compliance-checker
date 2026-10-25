@@ -70,6 +70,7 @@ face 类别只表示“可识别真实人物面部”，不是所有头部或脸
 }
 先开放式观察图片中所有可能泄露身份、账号、机构、二维码跳转、证件、签名、印章、车牌、屏幕账号信息的视觉对象，再映射到用户给出的候选 category。
 category 只能从用户给出的候选类别中选择。无法确定时 present=false 或降低 confidence。
+类别消歧：安装在车辆上、含省份简称汉字或字母数字组合的牌证是 license_plate（车牌），不要归为 id_card 或 badge；id_card 仅指身份证/学生证/工作证等卡片证件。
 如果存在敏感对象但难以精确定位，也必须 present=true，并给出 location_hint 与 suggested_prompt_for_sam3。
 """
 
