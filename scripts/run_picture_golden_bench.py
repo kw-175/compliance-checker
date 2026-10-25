@@ -20,6 +20,9 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+import sys
+
+sys.path.insert(0, str(ROOT))
 
 
 def _iou(a: dict, b: dict) -> float:
@@ -124,16 +127,16 @@ def compare(before_tag: str, after_tag: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    sub = parser.add_subparsers(dest="cmd", required=True)
-    run_p = sub.add_parser("run")
-    run_p.add_argument("--tag", required=True)
-    run_p.add_argument("--per-category", type=int, default=1)
-    cmp_p = sub.add_parser("--compare", nargs=2, metavar=("BEFORE", "AFTER"))
+    parser.add_argument("--compare", nargs=2, metavar=("BEFORE", "AFTER"))
+    parser.add_argument("--tag", default="")
+    parser.add_argument("--per-category", type=int, default=1)
     args = parser.parse_args()
-    if args.cmd == "run":
-        run(args.tag, args.per_category)
+    if args.compare:
+        compare(args.compare[0], args.compare[1])
     else:
-        compare(args.cmp_p[0], args.cmp_p[1])
+        if not args.tag:
+            parser.error("--tag is required for a bench run")
+        run(args.tag, args.per_category)
 
 
 if __name__ == "__main__":
