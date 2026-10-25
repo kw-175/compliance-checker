@@ -63,12 +63,17 @@ def run_preprocess(preprocessor: Preprocessor, image_path: str, output_dir: str)
     return result
 
 
-def run_ocr_layout(provider: OCRLayoutProvider, image_path: str) -> OCRLayoutResult:
+def run_ocr_layout(
+    provider: OCRLayoutProvider,
+    image_path: str,
+    *,
+    use_ocr_for_image_block: bool | None = None,
+) -> OCRLayoutResult:
     """Run OCR + layout analysis."""
     # 中文说明：OCR 不只提取文字，还可能同时输出文本块位置和版面区域，
     # 后续 PII 映射与版面理解都依赖这一步的结构化结果。
     start = time.monotonic()
-    result = provider.analyze(image_path)
+    result = provider.analyze(image_path, use_ocr_for_image_block=use_ocr_for_image_block)
     elapsed = (time.monotonic() - start) * 1000
     logger.info(
         "OCR completed in %.1fms: %d text blocks, %d layout regions (engine=%s)",

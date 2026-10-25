@@ -213,7 +213,15 @@ class PictureComplianceOrchestrator:
         if ocr_required:
             self._mark_current_step(job, "ocr", self._ocr.name)
             start = time.monotonic()
-            ocr_result = run_ocr_layout(self._ocr, image_path)
+            ocr_result = run_ocr_layout(
+                self._ocr,
+                image_path,
+                use_ocr_for_image_block=(
+                    bool(job.options.get("ocr_image_block"))
+                    if job.options.get("ocr_image_block") is not None
+                    else None
+                ),
+            )
             ocr_result.metadata = {
                 **dict(ocr_result.metadata or {}),
                 "image_width": job.precheck.get("image_width", 0),

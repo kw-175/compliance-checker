@@ -57,7 +57,7 @@ class PaddleOCRVLAPIProvider(OCRLayoutProvider):
         except Exception as exc:
             raise ProviderNotAvailableError(f"PaddleOCR-VL API at {self._base_url}") from exc
 
-    def analyze(self, image_path: str) -> OCRLayoutResult:
+    def analyze(self, image_path: str, *, use_ocr_for_image_block: bool | None = None) -> OCRLayoutResult:
         started = time.monotonic()
         image_file = Path(image_path)
         if not image_file.is_file():
@@ -69,7 +69,7 @@ class PaddleOCRVLAPIProvider(OCRLayoutProvider):
             "useLayoutDetection": self._use_layout_detection,
             "useChartRecognition": self._use_chart_recognition,
             "useSealRecognition": self._use_seal_recognition,
-            "useOcrForImageBlock": self._use_ocr_for_image_block,
+            "useOcrForImageBlock": self._use_ocr_for_image_block if use_ocr_for_image_block is None else use_ocr_for_image_block,
             "prettifyMarkdown": self._prettify_markdown,
             "visualize": self._visualize,
         }

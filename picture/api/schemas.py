@@ -52,6 +52,8 @@ class JobOptions(BaseModel):
     enable_visual_safety_detection: Optional[bool] = None
     enable_visual_sensitive_object_detection: Optional[bool] = None
     disable_ocr: bool = False
+    # 中文说明：None=按引擎默认（开启）；视频等批量场景可对非关键帧关闭，省去图片块 VL OCR 开销。
+    ocr_image_block: Optional[bool] = None
     disable_visual_safety: bool = False
     disable_visual_sensitive_objects: bool = False
     ordinary_dataset_enabled: bool = True

@@ -1,11 +1,51 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
+import threading
 import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
+
+# 同文本复用缓存：视频连续帧的内嵌文字（时间戳/台标/字幕）几乎不变，
+# 文本引擎对相同文本+档位+算子选择的结果可以跨帧复用；区域映射仍逐帧执行。
+_TEXT_PAYLOAD_CACHE_ENABLED = os.environ.get("PICTURE_OCR_TEXT_CACHE", "1") not in {"0", "false", "False"}
+_TEXT_PAYLOAD_CACHE_MAX = max(0, int(os.environ.get("PICTURE_OCR_TEXT_CACHE_ENTRIES", "512")))
+_TEXT_PAYLOAD_CACHE_LOCK = threading.Lock()
+_TEXT_PAYLOAD_CACHE: "OrderedDict[str, Any]" = OrderedDict()
+
+
+def _text_payload_cache_key(text: str, profile: str, config_overrides: dict[str, Any] | None) -> str:
+    canonical = json.dumps(
+        {"profile": profile, "overrides": config_overrides or {}},
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    return hashlib.sha256((text + "\x00" + canonical).encode("utf-8")).hexdigest()
+
+
+def _cached_text_payload(key: str) -> Any | None:
+    if not _TEXT_PAYLOAD_CACHE_ENABLED or _TEXT_PAYLOAD_CACHE_MAX == 0:
+        return None
+    with _TEXT_PAYLOAD_CACHE_LOCK:
+        payload = _TEXT_PAYLOAD_CACHE.get(key)
+        if payload is not None:
+            _TEXT_PAYLOAD_CACHE.move_to_end(key)
+        return payload
+
+
+def _store_text_payload(key: str, payload: Any) -> None:
+    if not _TEXT_PAYLOAD_CACHE_ENABLED or _TEXT_PAYLOAD_CACHE_MAX == 0:
+        return
+    with _TEXT_PAYLOAD_CACHE_LOCK:
+        _TEXT_PAYLOAD_CACHE[key] = payload
+        _TEXT_PAYLOAD_CACHE.move_to_end(key)
+        while len(_TEXT_PAYLOAD_CACHE) > _TEXT_PAYLOAD_CACHE_MAX:
+            _TEXT_PAYLOAD_CACHE.popitem(last=False)
 
 from picture.domain.enums import FindingType
 from picture.domain.models import BBox, OCRLayoutResult, OCRTextBlock, PictureFinding, Polygon, RegionMask
@@ -38,6 +78,15 @@ def run_text_pipeline_for_ocr(
     if metadata.get("valid_text") is False:
         return []
 
+    cache_key = _text_payload_cache_key(text, profile, config_overrides)
+    cached_payload = _cached_text_payload(cache_key)
+    if cached_payload is not None:
+        payload = dict(cached_payload)
+        payload_metadata = dict(payload.get("metadata") or {})
+        payload_metadata["ocr_text_payload_cache_hit"] = True
+        payload["metadata"] = payload_metadata
+        return _findings_from_text_payload(payload, ocr_result)
+
     package_path = _write_ocr_text_package(ocr_result, run_id=run_id, work_dir=work_dir)
 
     if text_api_base_url.strip():
@@ -68,6 +117,11 @@ def run_text_pipeline_for_ocr(
             "pipeline_run_id": output.pipeline_run_id,
         }
 
+    _store_text_payload(cache_key, payload)
+    return _findings_from_text_payload(payload, ocr_result)
+
+
+def _findings_from_text_payload(payload: Any, ocr_result: OCRLayoutResult) -> list[PictureFinding]:
     picture_findings: list[PictureFinding] = []
     picture_findings.extend(_extract_artifact_findings(payload, ocr_result))
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import shutil
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -22,6 +23,7 @@ from picture.domain.enums import RedactionMode
 from picture.domain.enums import RouteType
 from picture.domain.models import BBox, PictureFinding, PictureJob, RedactionOperation, RegionMask
 from picture.providers.redaction.opencv_redactor import OpenCVRedactor
+from video.application.media_observation import MediaObservation
 from video.application.picture_api_client import PictureApiConfig, PictureComplianceApiClient
 from video.domain.enums import VideoDecisionType, VideoRouteType
 from video.domain.models import FrameReference, TimeSpan, VideoActionPlan, VideoFinding, VideoPolicyResult, VideoSegment
@@ -88,11 +90,17 @@ def load_sequence(
     default_frame_duration_ms: int = 250,
     ffmpeg_bin: str = "ffmpeg",
     ffprobe_bin: str = "ffprobe",
+    observer: MediaObservation | None = None,
 ) -> SequenceBundle:
     source = Path(input_path)
     if source.is_dir():
+        if observer is not None:
+            observer.set_source_kind("frame_directory")
+            _mark_non_container_media_operations(observer)
         return _load_from_directory(source, output_dir, max(1, frame_stride), max(0, max_frames), max(1, default_frame_duration_ms))
     if source.suffix.lower() in _VIDEO_SUFFIXES:
+        if observer is not None:
+            observer.set_source_kind("video_container")
         return _load_from_video_container(
             source,
             output_dir,
@@ -102,39 +110,48 @@ def load_sequence(
             max(1, default_frame_duration_ms),
             ffmpeg_bin,
             ffprobe_bin,
+            observer,
         )
+    if observer is not None:
+        observer.set_source_kind("animated_image")
+        _mark_non_container_media_operations(observer)
     return _load_from_animated_image(source, output_dir, max(1, frame_stride), max(0, max_frames), max(1, default_frame_duration_ms))
+
+
+def _mark_non_container_media_operations(observer: MediaObservation) -> None:
+    for operation in ("probe", "frame_decode", "native_audio_extract"):
+        observer.mark_not_applicable(operation, "source_kind_not_video_container")
 
 
 def _load_from_directory(source: Path, output_dir: Path, frame_stride: int, max_frames: int, default_frame_duration_ms: int) -> SequenceBundle:
     candidates = [path for path in sorted(source.iterdir()) if path.is_file() and path.suffix.lower() in _IMAGE_SUFFIXES]
     if not candidates:
         raise ValueError(f"No image frames found in directory: {source}")
+    if max_frames:
+        frame_stride = max(frame_stride, math.ceil(len(candidates) / max_frames))
 
     frames_dir = output_dir / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
 
-    selected: list[Path] = []
+    selected: list[tuple[int, Path]] = []
     for index, path in enumerate(candidates):
         if index % frame_stride != 0:
             continue
-        selected.append(path)
-        if max_frames and len(selected) >= max_frames:
-            break
+        selected.append((index, path))
 
     frame_refs: list[FrameReference] = []
     durations: list[int] = []
-    pts_ms = 0
-    for sampled_index, path in enumerate(selected):
+    for sampled_index, (source_index, path) in enumerate(selected):
         destination = frames_dir / f"{source.stem}_frame_{sampled_index:05d}.png"
         with Image.open(path) as image:
             image.convert("RGB").save(destination)
-        duration_ms = default_frame_duration_ms
-        frame_refs.append(FrameReference(frame_index=sampled_index, pts_ms=pts_ms, image_uri=str(destination.resolve()), metadata={"source_index": sampled_index, "duration_ms": duration_ms, "source_path": str(path.resolve())}))
+        next_source_index = selected[sampled_index + 1][0] if sampled_index + 1 < len(selected) else len(candidates)
+        duration_ms = max(1, next_source_index - source_index) * default_frame_duration_ms
+        pts_ms = source_index * default_frame_duration_ms
+        frame_refs.append(FrameReference(frame_index=sampled_index, pts_ms=pts_ms, image_uri=str(destination.resolve()), metadata={"source_index": source_index, "duration_ms": duration_ms, "source_path": str(path.resolve())}))
         durations.append(duration_ms)
-        pts_ms += duration_ms
 
-    return SequenceBundle("frame_directory", frame_refs, durations, len(candidates), sum(durations), str(source.resolve()))
+    return SequenceBundle("frame_directory", frame_refs, durations, len(candidates), len(candidates) * default_frame_duration_ms, str(source.resolve()))
 
 
 def _load_from_animated_image(source: Path, output_dir: Path, frame_stride: int, max_frames: int, default_frame_duration_ms: int) -> SequenceBundle:
@@ -154,6 +171,8 @@ def _load_from_animated_image(source: Path, output_dir: Path, frame_stride: int,
 
     with Image.open(source) as image:
         n_frames = getattr(image, "n_frames", 1)
+        if max_frames:
+            frame_stride = max(frame_stride, math.ceil(n_frames / max_frames))
         for source_index in range(n_frames):
             image.seek(source_index)
             frame = image.convert("RGB")
@@ -161,8 +180,6 @@ def _load_from_animated_image(source: Path, output_dir: Path, frame_stride: int,
             pending_duration += duration_ms
             total_frames += 1
             if source_index % frame_stride != 0:
-                continue
-            if max_frames and len(frame_refs) >= max_frames:
                 continue
             output_path = frames_dir / f"{source.stem}_frame_{len(frame_refs):05d}.png"
             frame.save(output_path)
@@ -189,35 +206,60 @@ def _load_from_video_container(
     default_frame_duration_ms: int,
     ffmpeg_bin: str,
     ffprobe_bin: str,
+    observer: MediaObservation | None = None,
 ) -> SequenceBundle:
-    metadata = probe_media(source, ffprobe_bin=ffprobe_bin)
+    metadata = probe_media(source, ffprobe_bin=ffprobe_bin, observer=observer)
     if not metadata:
         raise RuntimeError("FFmpeg/ffprobe metadata probing failed. Install FFmpeg and ensure ffprobe is available in PATH.")
     fps = float(metadata.get("fps", 0.0) or 0.0)
     if sample_fps > 0 and fps > 0:
         frame_stride = max(frame_stride, int(round(fps / sample_fps)))
+    input_frame_count = int(metadata.get("frame_count", 0) or 0)
+    if input_frame_count <= 0 and fps > 0:
+        input_frame_count = int(round((int(metadata.get("duration_ms", 0) or 0) / 1000.0) * fps))
+    if max_frames and input_frame_count > 0:
+        # Increase the stride instead of asking FFmpeg for only the first N frames.
+        # This preserves full-timeline coverage for long videos.
+        frame_stride = max(frame_stride, math.ceil(input_frame_count / max_frames))
 
     frames_dir = output_dir / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
     pattern = frames_dir / f"{source.stem}_frame_%05d.png"
-    result = run_command([
-        ffmpeg_bin,
-        "-y",
-        "-i",
-        str(source),
-        "-vf",
-        f"select=not(mod(n\\,{frame_stride}))",
-        "-vsync",
-        "vfr",
-        *( ["-frames:v", str(max_frames)] if max_frames else [] ),
-        str(pattern),
-    ], timeout=600)
+    if observer is not None:
+        observer.record_attempt("frame_decode")
+    try:
+        result = run_command([
+            ffmpeg_bin,
+            "-y",
+            "-i",
+            str(source),
+            "-vf",
+            f"select=not(mod(n\\,{frame_stride}))",
+            "-vsync",
+            "vfr",
+            str(pattern),
+        ], timeout=600)
+    except Exception:
+        if observer is not None:
+            observer.record_failure("frame_decode", "exception")
+        raise
     if result is None:
+        if observer is not None:
+            observer.record_failure("frame_decode", "command_returned_none")
         raise RuntimeError("FFmpeg frame extraction failed. Install FFmpeg or verify the input container is readable.")
 
-    extracted = sorted(frames_dir.glob(f"{source.stem}_frame_*.png"))
+    try:
+        extracted = sorted(frames_dir.glob(f"{source.stem}_frame_*.png"))
+    except Exception:
+        if observer is not None:
+            observer.record_failure("frame_decode", "extracted_frame_scan_failed")
+        raise
     if not extracted:
+        if observer is not None:
+            observer.record_failure("frame_decode", "no_extracted_frames")
         raise RuntimeError(f"No frames were extracted from video source: {source}")
+    if observer is not None:
+        observer.record_success("frame_decode")
 
     total_duration_ms = int(metadata.get("duration_ms", 0) or 0)
     sampled_frame_duration_ms = max(1, int(round((1000.0 / fps) * frame_stride))) if fps > 0 else default_frame_duration_ms
@@ -266,15 +308,37 @@ def _parse_fraction(raw: str | None) -> float:
         return 0.0
 
 
-def probe_media(path: Path, ffprobe_bin: str = "ffprobe") -> dict[str, object]:
-    result = run_command([ffprobe_bin, "-v", "error", "-show_streams", "-show_format", "-print_format", "json", str(path)], timeout=120)
+def probe_media(
+    path: Path,
+    ffprobe_bin: str = "ffprobe",
+    observer: MediaObservation | None = None,
+) -> dict[str, object]:
+    if observer is not None:
+        observer.record_attempt("probe")
+    try:
+        result = run_command([ffprobe_bin, "-v", "error", "-show_streams", "-show_format", "-print_format", "json", str(path)], timeout=120)
+    except Exception:
+        if observer is not None:
+            observer.record_failure("probe", "exception")
+        raise
     if result is None:
+        if observer is not None:
+            observer.record_failure("probe", "command_returned_none")
         return {}
     try:
         payload = json.loads(result.stdout)
     except Exception:
         logger.warning("ffprobe output parse failed for %s", path)
+        if observer is not None:
+            observer.record_failure("probe", "json_parse_failed")
         return {}
+    if not isinstance(payload, dict):
+        logger.warning("ffprobe output was not a JSON object for %s", path)
+        if observer is not None:
+            observer.record_failure("probe", "json_not_object")
+        return {}
+    if observer is not None:
+        observer.record_success("probe")
 
     streams = payload.get("streams", [])
     video_stream = next((stream for stream in streams if stream.get("codec_type") == "video"), {})
@@ -301,26 +365,45 @@ def probe_media(path: Path, ffprobe_bin: str = "ffprobe") -> dict[str, object]:
     }
 
 
-def extract_audio_track(video_path: str, output_dir: Path, ffmpeg_bin: str = "ffmpeg") -> str | None:
+def extract_audio_track(
+    video_path: str,
+    output_dir: Path,
+    ffmpeg_bin: str = "ffmpeg",
+    observer: MediaObservation | None = None,
+) -> str | None:
     output_dir.mkdir(parents=True, exist_ok=True)
     target_path = output_dir / (Path(video_path).stem + "_audio.wav")
-    result = run_command([
-        ffmpeg_bin,
-        "-y",
-        "-i",
-        video_path,
-        "-vn",
-        "-ac",
-        "1",
-        "-ar",
-        "16000",
-        "-c:a",
-        "pcm_s16le",
-        str(target_path),
-    ], timeout=600)
+    if observer is not None:
+        observer.record_attempt("native_audio_extract")
+    try:
+        result = run_command([
+            ffmpeg_bin,
+            "-y",
+            "-i",
+            video_path,
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-c:a",
+            "pcm_s16le",
+            str(target_path),
+        ], timeout=600)
+    except Exception:
+        if observer is not None:
+            observer.record_failure("native_audio_extract", "exception")
+        raise
     if result is None or not target_path.exists():
+        if observer is not None:
+            observer.record_failure(
+                "native_audio_extract",
+                "command_returned_none" if result is None else "output_missing",
+            )
         logger.warning("Native audio extraction failed for %s", video_path)
         return None
+    if observer is not None:
+        observer.record_success("native_audio_extract")
     return str(target_path.resolve())
 
 
@@ -331,6 +414,8 @@ def analyze_frames(
     options: dict[str, object] | None = None,
     max_workers: int = 1,
     picture_api_config: PictureApiConfig | None = None,
+    analysis_frames: list[FrameReference] | None = None,
+    observer: object | None = None,
 ) -> list[PictureJob]:
     options = dict(options or {})
     frame_options = {
@@ -358,17 +443,29 @@ def analyze_frames(
         "visual_sensitive_object_operator_ids",
         "visual_sensitive_object_types",
         "picture_mode",
+        "ocr_image_block",
     ):
         if key in options:
             frame_options[key] = options[key]
-    workers = max(1, min(max_workers, len(frames)))
+    candidate_frames = list(analysis_frames) if analysis_frames is not None else list(frames)
+    if not candidate_frames:
+        return []
+    workers = max(1, min(max_workers, len(candidate_frames)))
     client = PictureComplianceApiClient(picture_api_config)
+    if observer is not None:
+        _attach_picture_api_observer(client, observer)
     client.check_health()
     skip_duplicates = bool(options.get("skip_duplicate_frames", True))
     diff_threshold = float(options.get("frame_difference_threshold", 0.02) or 0.02)
-    submission_frames = _select_submission_frames(frames, diff_threshold) if skip_duplicates else frames
+    submission_frames = _select_submission_frames(candidate_frames, diff_threshold) if skip_duplicates else candidate_frames
+    for frame in submission_frames:
+        frame.metadata["picture_api_submitted"] = True
     if len(submission_frames) < len(frames):
-        logger.info("Video frame duplicate cache reduced picture API calls from %s to %s", len(frames), len(submission_frames))
+        logger.info(
+            "Video frame planning/cache reduced picture API calls from %s sampled frames to %s submissions",
+            len(frames),
+            len(submission_frames),
+        )
 
     def _run(frame: FrameReference) -> PictureJob:
         return client.run_frame(
@@ -390,6 +487,26 @@ def analyze_frames(
             results[future_map[future]] = future.result()
     unique_results = [result for result in results if result is not None]
     return _expand_cached_frame_results(frames, submission_frames, unique_results)
+
+
+def _attach_picture_api_observer(client: object, observer: object) -> None:
+    """Bind observation only when a client explicitly exposes an attach capability."""
+    attach = getattr(client, "attach_observer", None)
+    if not callable(attach):
+        attach = getattr(client, "attach", None)
+    mark_uninstrumented = getattr(observer, "mark_uninstrumented", None)
+    if not callable(attach):
+        if callable(mark_uninstrumented):
+            mark_uninstrumented("Picture API client does not expose an observer attach method")
+        return
+    try:
+        attached = attach(observer)
+    except Exception as exc:
+        if callable(mark_uninstrumented):
+            mark_uninstrumented(f"Picture API observer attach failed: {type(exc).__name__}")
+        return
+    if attached is False and callable(mark_uninstrumented):
+        mark_uninstrumented("Picture API client declined observer attachment")
 
 
 def _select_submission_frames(frames: list[FrameReference], difference_threshold: float) -> list[FrameReference]:
@@ -452,13 +569,24 @@ def _expand_cached_frame_results(
         frame.frame_id: result
         for frame, result in zip(submitted_frames, submitted_results)
     }
+    frame_by_id = {frame.frame_id: frame for frame in all_frames}
+
+    def _resolve(frame: FrameReference) -> PictureJob | None:
+        current_id = frame.frame_id
+        visited: set[str] = set()
+        while current_id and current_id not in visited:
+            visited.add(current_id)
+            result = result_by_frame_id.get(current_id)
+            if result is not None:
+                return result
+            current = frame_by_id.get(current_id)
+            current_id = str(current.metadata.get("cached_from_frame_id") or "") if current else ""
+        return None
+
     expanded: list[PictureJob] = []
     last_result: PictureJob | None = None
     for frame in all_frames:
-        result = result_by_frame_id.get(frame.frame_id)
-        if result is None:
-            cached_from = str(frame.metadata.get("cached_from_frame_id") or "")
-            result = result_by_frame_id.get(cached_from) or last_result
+        result = _resolve(frame) or last_result
         if result is None:
             continue
         expanded.append(result)
